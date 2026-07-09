@@ -1,0 +1,554 @@
+// Verro platform data model.
+// Direct translation of Section 1 (Domain model) and Section 1.1 (network
+// consent model) of platform-architecture-and-brd-additions.md.
+//
+// Key design points, carried over from that doc:
+//  - Individuals (Broker) and businesses (BrokerBusiness) are modelled
+//    separately. A broker business can be a sole trader (one Broker, one
+//    BrokerBusinessMembership row) or a complex entity with many brokers
+//    (multiple membership rows). ACL/credit representative info belongs to
+//    the business, not the individual, except where an individual also
+//    personally holds their own CRN.
+//  - VerificationCheck, Document, ComplianceNote and ComplianceFlag can
+//    each be about an individual broker OR a broker business (sometimes
+//    both matter, e.g. a licence issue is business-level, a police check
+//    is individual-level). Each of these models has a nullable brokerId
+//    and a nullable brokerBusinessId - application code must enforce that
+//    at least one is set, and ideally so should a DB-level CHECK
+//    constraint added via a follow-up custom migration (Prisma's schema
+//    language doesn't support arbitrary CHECK constraints directly).
+//  - VerificationCheck.expiresAt implements the resolved decision that
+//    check currency is a single global policy: every check type expires
+//    12 months after it was run, platform-wide (not configurable per
+//    organization).
+//  - BrokerRelationship (individual-to-org) and BrokerBusinessRelationship
+//    (business-to-org) both carry their own status - accreditation is
+//    still each organization's own decision even though verification is
+//    shared. BrokerRelationship optionally records which business the
+//    individual was operating under when the relationship was formed.
+//  - AccessGrant is the broker-controlled consent mechanism (Section 1.1 /
+//    "Data sharing & consent" epic). Resolved decision: revocation is
+//    never blocked, even while an organization holds an ACTIVE
+//    relationship with that broker - the broker retains full control at
+//    all times. (This can leave an org with an active accreditation but
+//    no visibility into current compliance status - that's accepted as
+//    intentional, not a bug.)
+//  - ComplianceFlag is always visible to every organization holding a
+//    GRANTED AccessGrant for the relevant broker/business (same broadcast
+//    mechanism as an adverse VerificationCheck result) - that's the point
+//    of a flag. ComplianceNote defaults to private to the authoring
+//    organization and must be explicitly marked NETWORK_VISIBLE to share.
+//  - StatusEvent, VerificationCheck, StatusEvent etc. are treated as
+//    append-only audit trails.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgType {
+  AGGREGATOR
+  LENDER
+  ASSOCIATION
+  INTERNAL
+}
+
+// Mirrors the broker relationship state machine in Section 2 of the
+// architecture doc. Also reused for Broker.overallStatus as a display
+// rollup, and for BrokerBusinessRelationship.status.
+enum RelationshipStatus {
+  INVITED
+  DRAFT
+  SUBMITTED
+  IDV_PENDING
+  SCREENING_PENDING
+  DOC_REVIEW_PENDING
+  PENDING_ADMIN_APPROVAL
+  ACTIVE
+  FLAGGED
+  SUSPENDED
+  DECLINED
+  REVOKED
+}
+
+enum CheckType {
+  IDV
+  AML
+  CREDIT
+  POLICE
+  ASIC
+  ABN
+}
+
+enum CheckResult {
+  PENDING
+  PASS
+  FAIL
+  REVIEW_REQUIRED
+}
+
+enum DocReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AccessGrantOrigin {
+  BROKER_INITIATED
+  ORG_REQUESTED
+}
+
+enum AccessGrantStatus {
+  PENDING
+  GRANTED
+  DENIED
+  REVOKED
+}
+
+enum PortalRole {
+  BROKER
+  CLIENT_STAFF
+  CLIENT_ADMIN
+  INTERNAL_ADMIN
+  INTERNAL_REVIEWER
+}
+
+// --- Broker business structure ---
+
+enum BusinessEntityType {
+  SOLE_TRADER
+  COMPANY
+  PARTNERSHIP
+  TRUST
+}
+
+// Whether the business holds its own Australian Credit Licence, or
+// operates as a Credit Representative under someone else's licence
+// (usually the aggregator's).
+enum AclHolderType {
+  OWN_ACL
+  CREDIT_REPRESENTATIVE
+}
+
+enum BrokerBusinessMemberRole {
+  PRINCIPAL
+  DIRECTOR
+  CREDIT_REPRESENTATIVE
+  EMPLOYEE
+  OTHER
+}
+
+// --- Compliance notes & flags ---
+
+enum NoteVisibility {
+  PRIVATE_TO_ORG
+  NETWORK_VISIBLE
+}
+
+enum FlagCategory {
+  CONDUCT
+  FRAUD
+  DOCUMENTATION
+  LICENCE
+  COMPLAINT
+  OTHER
+}
+
+enum FlagSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FlagStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+model Broker {
+  id          String   @id @default(uuid())
+  firstName   String
+  lastName    String
+  otherNames  String?
+  dateOfBirth DateTime
+  gender      String?
+  email       String   @unique
+  phone       String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  postcode     String?
+  state        String?
+
+  // An individual can personally hold their own Credit Representative
+  // Number in addition to (or instead of) operating under a business's
+  // ACL/CR status - see BrokerBusiness for the business-level ACL/CRN.
+  personalCrn String?
+
+  // Derived rollup for display only - source of truth is always the
+  // relevant BrokerRelationship.status. See Section 1 of the arch doc.
+  overallStatus RelationshipStatus @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  businessMemberships BrokerBusinessMembership[]
+  relationships        BrokerRelationship[]
+  documents            Document[]
+  verificationChecks   VerificationCheck[]
+  accessGrants         AccessGrant[]
+  complianceNotes      ComplianceNote[]
+  complianceFlags      ComplianceFlag[]
+
+  @@index([lastName, firstName])
+}
+
+// A broking business: could be a sole trader (one Broker, one membership
+// row) or a company/partnership/trust with many brokers working under it.
+model BrokerBusiness {
+  id         String             @id @default(uuid())
+  legalName  String
+  tradingName String?
+  entityType BusinessEntityType
+  abnAcn     String?
+  website    String?
+
+  aclHolderType          AclHolderType
+  aclNumber              String? // set when aclHolderType = OWN_ACL
+  creditRepresentativeNumber String? // set when aclHolderType = CREDIT_REPRESENTATIVE
+  // If operating as a Credit Representative, whose ACL is it under -
+  // usually the aggregator's. Nullable because it isn't known/relevant
+  // when aclHolderType = OWN_ACL.
+  aclHolderOrganizationId String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  postcode     String?
+  state        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  aclHolderOrganization Organization? @relation("AclCreditRepresentatives", fields: [aclHolderOrganizationId], references: [id])
+
+  memberships        BrokerBusinessMembership[]
+  relationships       BrokerBusinessRelationship[]
+  brokerRelationships BrokerRelationship[] // individual relationships formed under this business
+  documents           Document[]
+  verificationChecks  VerificationCheck[]
+  complianceNotes     ComplianceNote[]
+  complianceFlags     ComplianceFlag[]
+
+  @@index([abnAcn])
+}
+
+// Join table: which brokers work at which broker business. Multiple rows
+// per broker support moving between businesses over time (history is kept
+// via startDate/endDate rather than being overwritten) - this is also
+// what the "Transfer Requests" workflow in the source docs becomes once
+// digitised (Section 1.1 / Section 6, broker portability).
+model BrokerBusinessMembership {
+  id               String                   @id @default(uuid())
+  brokerId         String
+  brokerBusinessId String
+  role             BrokerBusinessMemberRole
+  isPrimary        Boolean                  @default(true)
+  startDate        DateTime                 @default(now())
+  endDate          DateTime?
+
+  createdAt DateTime @default(now())
+
+  broker         Broker         @relation(fields: [brokerId], references: [id])
+  brokerBusiness BrokerBusiness @relation(fields: [brokerBusinessId], references: [id])
+
+  @@index([brokerId])
+  @@index([brokerBusinessId])
+}
+
+// Business-level accreditation with an organization (typically the
+// aggregation agreement between a broking business and an aggregator).
+// Mirrors BrokerRelationship's shape and state machine (Section 2) but at
+// the business level rather than the individual level.
+model BrokerBusinessRelationship {
+  id               String             @id @default(uuid())
+  brokerBusinessId String
+  organizationId   String
+  status           RelationshipStatus @default(DRAFT)
+  accreditedDate   DateTime?
+  nextReviewDate   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  brokerBusiness BrokerBusiness @relation(fields: [brokerBusinessId], references: [id])
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+
+  statusEvents StatusEvent[]
+
+  @@unique([brokerBusinessId, organizationId])
+  @@index([organizationId, status])
+}
+
+model Organization {
+  id          String  @id @default(uuid())
+  orgType     OrgType
+  legalName   String
+  tradingName String?
+  abnAcn      String?
+
+  primaryContactEmail String?
+  phone               String?
+  addressLine1        String?
+  addressLine2        String?
+  city                String?
+  postcode            String?
+  state               String?
+  isActive            Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  relationships         BrokerRelationship[]
+  businessRelationships BrokerBusinessRelationship[]
+  portalUsers           PortalUser[]
+  accessGrants          AccessGrant[]
+  // Broker businesses operating as this org's Credit Representative
+  // (aclHolderType = CREDIT_REPRESENTATIVE, aclHolderOrganizationId = this org).
+  aclCreditRepresentatives BrokerBusiness[] @relation("AclCreditRepresentatives")
+  complianceNotesAuthored ComplianceNote[]
+  complianceFlagsRaised   ComplianceFlag[]
+
+  @@index([orgType])
+}
+
+// Individual-level relationship with an organization (matches the BRD's
+// broker-centric onboarding flow: broker selects an aggregator/lender/
+// association directly). Optionally records which broker business the
+// individual was operating under when the relationship was formed/is
+// currently active, since that context matters for compliance history
+// even as the individual moves between businesses over time.
+model BrokerRelationship {
+  id               String             @id @default(uuid())
+  brokerId         String
+  organizationId   String
+  brokerBusinessId String?
+  status           RelationshipStatus @default(DRAFT)
+  accreditedDate   DateTime?
+  nextReviewDate   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  broker         Broker          @relation(fields: [brokerId], references: [id])
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  brokerBusiness BrokerBusiness? @relation(fields: [brokerBusinessId], references: [id])
+
+  trainingRecords TrainingRecord[]
+  statusEvents    StatusEvent[]
+
+  @@unique([brokerId, organizationId])
+  @@index([organizationId, status])
+}
+
+// Subject is EITHER a Broker OR a BrokerBusiness (exactly one of brokerId /
+// brokerBusinessId should be set - enforced in application code, and
+// ideally via a DB CHECK constraint added in a follow-up migration).
+// ABN/ASIC/company-level checks are business-scoped; IDV/police/personal
+// credit checks are broker-scoped.
+model VerificationCheck {
+  id               String      @id @default(uuid())
+  brokerId         String?
+  brokerBusinessId String?
+  checkType        CheckType
+  vendor           String?
+  result           CheckResult @default(PENDING)
+  rawResponse      Json?
+  runAt            DateTime    @default(now())
+  // Resolved decision (Open decision #4): a single global expiry policy,
+  // not configurable per organization. Every check is valid for 12 months
+  // from runAt; set at write time as runAt + 1 year.
+  expiresAt        DateTime
+
+  broker         Broker?         @relation(fields: [brokerId], references: [id])
+  brokerBusiness BrokerBusiness? @relation(fields: [brokerBusinessId], references: [id])
+  documents      Document[]
+
+  @@index([brokerId, checkType])
+  @@index([brokerBusinessId, checkType])
+  @@index([expiresAt])
+}
+
+// Subject is EITHER a Broker OR a BrokerBusiness - same convention as
+// VerificationCheck (e.g. a PI insurance certificate is business-level, a
+// police certificate is individual-level).
+model Document {
+  id                  String          @id @default(uuid())
+  brokerId            String?
+  brokerBusinessId    String?
+  docType             String
+  storageKey          String
+  reviewStatus        DocReviewStatus @default(PENDING)
+  verificationCheckId String?
+  uploadedAt          DateTime        @default(now())
+
+  broker            Broker?             @relation(fields: [brokerId], references: [id])
+  brokerBusiness    BrokerBusiness?     @relation(fields: [brokerBusinessId], references: [id])
+  verificationCheck VerificationCheck?  @relation(fields: [verificationCheckId], references: [id])
+
+  @@index([brokerId, docType])
+  @@index([brokerBusinessId, docType])
+}
+
+model TrainingRecord {
+  id             String    @id @default(uuid())
+  relationshipId String
+  trainingName   String
+  completed      Boolean   @default(false)
+  completedDate  DateTime?
+  markedByUserId String?
+  expiryDate     DateTime?
+
+  createdAt DateTime @default(now())
+
+  relationship BrokerRelationship @relation(fields: [relationshipId], references: [id])
+
+  @@index([relationshipId])
+}
+
+// Append-only audit trail for every status transition, at either the
+// individual or business relationship level (exactly one of
+// relationshipId / businessRelationshipId set). This is what a compliance
+// auditor or a lender's risk team will eventually ask to see.
+model StatusEvent {
+  id                     String              @id @default(uuid())
+  relationshipId         String?
+  businessRelationshipId String?
+  fromStatus             RelationshipStatus?
+  toStatus               RelationshipStatus
+  actionedBy             String?
+  reason                 String?
+
+  createdAt DateTime @default(now())
+
+  relationship         BrokerRelationship?         @relation(fields: [relationshipId], references: [id])
+  businessRelationship BrokerBusinessRelationship? @relation(fields: [businessRelationshipId], references: [id])
+  actionedByUser        PortalUser?                @relation(fields: [actionedBy], references: [id])
+
+  @@index([relationshipId, createdAt])
+  @@index([businessRelationshipId, createdAt])
+}
+
+model PortalUser {
+  id             String     @id @default(uuid())
+  organizationId String?
+  role           PortalRole
+  firstName      String?
+  lastName       String?
+  jobTitle       String?
+  phone          String?
+  email          String     @unique
+  isActive       Boolean    @default(true)
+  lastLoginAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  organization    Organization?    @relation(fields: [organizationId], references: [id])
+  statusEvents    StatusEvent[]
+  complianceNotes ComplianceNote[]
+  complianceFlagsRaised   ComplianceFlag[] @relation("FlagRaisedBy")
+  complianceFlagsResolved ComplianceFlag[] @relation("FlagResolvedBy")
+
+  @@index([organizationId])
+}
+
+// Broker-controlled consent mechanism - Section 1.1 and the "Data sharing
+// & consent" epic. Nothing about a broker is visible to an organization
+// without a row here in status = GRANTED. Resolved decision: revoke is
+// never blocked, even while the org holds an ACTIVE BrokerRelationship or
+// BrokerBusinessRelationship - the broker retains full control at all
+// times (see AccessGrantsService.revoke - intentionally has no blocking
+// check).
+model AccessGrant {
+  id                String            @id @default(uuid())
+  brokerId          String
+  organizationId    String
+  origin            AccessGrantOrigin
+  status            AccessGrantStatus @default(PENDING)
+  requestedByUserId String?
+  decidedByBrokerId String?
+  requestedAt       DateTime          @default(now())
+  decidedAt         DateTime?
+
+  broker       Broker       @relation(fields: [brokerId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([brokerId, organizationId])
+  @@index([organizationId, status])
+}
+
+// Free-text notes from FBAA/MFAA/lenders/aggregators against a broker or
+// broker business. Defaults to private to the authoring organization;
+// must be explicitly marked NETWORK_VISIBLE to be shared with other
+// organizations holding a GRANTED AccessGrant. Subject is EITHER a Broker
+// OR a BrokerBusiness (exactly one set).
+model ComplianceNote {
+  id               String         @id @default(uuid())
+  brokerId         String?
+  brokerBusinessId String?
+  organizationId   String
+  authorUserId     String
+  body             String
+  visibility       NoteVisibility @default(PRIVATE_TO_ORG)
+
+  createdAt DateTime @default(now())
+
+  broker         Broker?         @relation(fields: [brokerId], references: [id])
+  brokerBusiness BrokerBusiness? @relation(fields: [brokerBusinessId], references: [id])
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  authorUser     PortalUser      @relation(fields: [authorUserId], references: [id])
+
+  @@index([brokerId])
+  @@index([brokerBusinessId])
+}
+
+// Formal compliance flags raised by FBAA/MFAA/lenders/aggregators against
+// a broker or broker business. Always visible to every organization
+// holding a GRANTED AccessGrant for the relevant subject (same broadcast
+// mechanism as an adverse VerificationCheck result, Section 1.1) - that's
+// the entire point of a flag, unlike ComplianceNote which defaults
+// private. Subject is EITHER a Broker OR a BrokerBusiness (exactly one set).
+model ComplianceFlag {
+  id                     String       @id @default(uuid())
+  brokerId               String?
+  brokerBusinessId       String?
+  raisedByOrganizationId String
+  raisedByUserId         String
+  category               FlagCategory
+  severity               FlagSeverity
+  description            String
+  status                 FlagStatus   @default(OPEN)
+  resolvedAt             DateTime?
+  resolvedByUserId       String?
+  resolutionNotes        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  broker             Broker?         @relation(fields: [brokerId], references: [id])
+  brokerBusiness     BrokerBusiness? @relation(fields: [brokerBusinessId], references: [id])
+  raisedByOrganization Organization  @relation(fields: [raisedByOrganizationId], references: [id])
+  raisedByUser       PortalUser      @relation("FlagRaisedBy", fields: [raisedByUserId], references: [id])
+  resolvedByUser     PortalUser?     @relation("FlagResolvedBy", fields: [resolvedByUserId], references: [id])
+
+  @@index([brokerId, status])
+  @@index([brokerBusinessId, status])
+}
