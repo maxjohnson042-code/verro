@@ -1,0 +1,40 @@
+name: CI
+
+# Milestone 0 CI: install, generate the Prisma client, and build (which
+# type-checks both apps/api and apps/web). No test job yet - there are no
+# tests written. Lint is non-blocking for now because ESLint isn't
+# configured in this scaffold yet (see README "What's stubbed"); flip
+# continue-on-error to false once an .eslintrc exists.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Dummy value - `prisma generate` only needs the datasource block to
+      # be syntactically valid, it doesn't connect to a real database.
+      DATABASE_URL: "postgresql://verro:verro@localhost:5432/verro?schema=public"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Build (type-checks apps/api and apps/web)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
