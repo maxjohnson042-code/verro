@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { Fragment, useEffect, useState } from "react";
+import { apiFetch, apiOpenFile } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,14 @@ interface TrainingRecord {
 interface BrokerContextRelationship {
   status: string;
   organization: { legalName: string; orgType: string };
+}
+interface DocumentRow {
+  id: string;
+  docType: string;
+  originalFilename: string | null;
+  reviewStatus: string;
+  reviewNotes: string | null;
+  uploadedAt: string;
 }
 interface RelationshipRow {
   id: string;
@@ -94,6 +102,12 @@ function needsReason(toStatus: string) {
   return ["DECLINED", "FLAGGED", "SUSPENDED", "REVOKED"].includes(toStatus);
 }
 
+function docReviewVariant(status: string): "default" | "success" | "destructive" | "secondary" {
+  if (status === "APPROVED") return "success";
+  if (status === "REJECTED") return "destructive";
+  return "secondary";
+}
+
 export default function AdminReviewQueuePage() {
   const [verificationQueue, setVerificationQueue] = useState<VerificationBroker[] | null>(null);
   const [pendingAcceptances, setPendingAcceptances] = useState<RelationshipRow[] | null>(null);
@@ -104,6 +118,8 @@ export default function AdminReviewQueuePage() {
   const [status, setStatus] = useState<string | null>(null);
   const [unauthorized, setUnauthorized] = useState(false);
   const [creditRepInputs, setCreditRepInputs] = useState<Record<string, string>>({});
+  const [expandedBrokerId, setExpandedBrokerId] = useState<string | null>(null);
+  const [brokerDocuments, setBrokerDocuments] = useState<Record<string, DocumentRow[]>>({});
 
   useEffect(() => {
     const auth = getAuth();
@@ -181,6 +197,43 @@ export default function AdminReviewQueuePage() {
     }
   }
 
+  // Documents are lazily fetched per broker on expand rather than baked
+  // into the queue payload - keeps the review-queue endpoint cheap for
+  // the common case of brokers with nothing uploaded yet.
+  async function toggleBrokerDocuments(brokerId: string) {
+    if (expandedBrokerId === brokerId) {
+      setExpandedBrokerId(null);
+      return;
+    }
+    setExpandedBrokerId(brokerId);
+    if (!brokerDocuments[brokerId]) {
+      try {
+        const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${brokerId}`);
+        setBrokerDocuments((prev) => ({ ...prev, [brokerId]: docs }));
+      } catch (err) {
+        setStatus(`Error: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  async function handleDocumentReview(brokerId: string, documentId: string, reviewStatus: "APPROVED" | "REJECTED") {
+    let reviewNotes: string | undefined;
+    if (reviewStatus === "REJECTED") {
+      reviewNotes = window.prompt("Reason for rejecting this document?") ?? undefined;
+    }
+    setStatus(null);
+    try {
+      await apiFetch(`/documents/${documentId}/review-status`, {
+        method: "PATCH",
+        body: JSON.stringify({ reviewStatus, reviewNotes }),
+      });
+      const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${brokerId}`);
+      setBrokerDocuments((prev) => ({ ...prev, [brokerId]: docs }));
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  }
+
   async function handleRelationshipTransition(relationshipId: string, toStatus: string) {
     let reason: string | undefined;
     if (needsReason(toStatus)) {
@@ -244,30 +297,87 @@ export default function AdminReviewQueuePage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {verificationQueue.map((b) => (
-                      <tr key={b.id}>
-                        <td className="px-4 py-3">
-                          {b.firstName} {b.lastName}{" "}
-                          <span className="text-xs text-muted-foreground">({b.email})</span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant={statusVariant(b.overallStatus)}>{b.overallStatus}</Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex gap-2">
-                            {(VERIFICATION_NEXT[b.overallStatus] ?? []).map((toStatus) => (
-                              <Button
-                                key={toStatus}
-                                type="button"
-                                size="sm"
-                                variant={actionVariant(toStatus)}
-                                onClick={() => handleBrokerTransition(b.id, toStatus)}
-                              >
-                                {toStatus}
-                              </Button>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
+                      <Fragment key={b.id}>
+                        <tr>
+                          <td className="px-4 py-3">
+                            <button type="button" className="text-left hover:underline" onClick={() => toggleBrokerDocuments(b.id)}>
+                              {b.firstName} {b.lastName}
+                            </button>{" "}
+                            <span className="text-xs text-muted-foreground">({b.email})</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge variant={statusVariant(b.overallStatus)}>{b.overallStatus}</Badge>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-2">
+                              {(VERIFICATION_NEXT[b.overallStatus] ?? []).map((toStatus) => (
+                                <Button
+                                  key={toStatus}
+                                  type="button"
+                                  size="sm"
+                                  variant={actionVariant(toStatus)}
+                                  onClick={() => handleBrokerTransition(b.id, toStatus)}
+                                >
+                                  {toStatus}
+                                </Button>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                        {expandedBrokerId === b.id && (
+                          <tr key={`${b.id}-docs`}>
+                            <td colSpan={3} className="bg-secondary/30 px-4 py-3">
+                              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                Documents
+                              </p>
+                              {!brokerDocuments[b.id] && <p className="text-sm text-muted-foreground">Loading...</p>}
+                              {brokerDocuments[b.id]?.length === 0 && (
+                                <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>
+                              )}
+                              {(brokerDocuments[b.id]?.length ?? 0) > 0 && (
+                                <div className="grid gap-2">
+                                  {brokerDocuments[b.id].map((d) => (
+                                    <div
+                                      key={d.id}
+                                      className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                                    >
+                                      <button
+                                        type="button"
+                                        className="text-left text-primary hover:underline"
+                                        onClick={() => apiOpenFile(`/documents/${d.id}/file`, d.originalFilename ?? "document")}
+                                      >
+                                        {d.docType} — {d.originalFilename ?? "file"}
+                                      </button>
+                                      <div className="flex items-center gap-2">
+                                        <Badge variant={docReviewVariant(d.reviewStatus)}>{d.reviewStatus}</Badge>
+                                        {d.reviewStatus === "PENDING" && (
+                                          <>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              onClick={() => handleDocumentReview(b.id, d.id, "APPROVED")}
+                                            >
+                                              Approve
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="destructive"
+                                              onClick={() => handleDocumentReview(b.id, d.id, "REJECTED")}
+                                            >
+                                              Reject
+                                            </Button>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

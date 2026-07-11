@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, apiOpenFile } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -72,6 +72,19 @@ interface DetailResponse {
   notes: ComplianceNote[];
   flags: ComplianceFlag[];
 }
+interface DocumentRow {
+  id: string;
+  docType: string;
+  originalFilename: string | null;
+  reviewStatus: string;
+  uploadedAt: string;
+}
+
+function docReviewVariant(status: string): "default" | "success" | "destructive" | "secondary" {
+  if (status === "APPROVED") return "success";
+  if (status === "REJECTED") return "destructive";
+  return "secondary";
+}
 
 function statusVariant(status: string): "default" | "success" | "destructive" | "secondary" {
   if (status === "ACTIVE") return "success";
@@ -83,6 +96,7 @@ export default function ClientBrokerDetailPage({ params }: { params: { id: strin
   const { id } = params;
   const [loggedOut, setLoggedOut] = useState(false);
   const [data, setData] = useState<DetailResponse | null>(null);
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -108,6 +122,11 @@ export default function ClientBrokerDetailPage({ params }: { params: { id: strin
     try {
       const result = await apiFetch<DetailResponse>(`/organizations/me/brokers/${id}`);
       setData(result);
+      // Same GRANTED-access check as the broker detail endpoint - the API
+      // re-verifies it independently, this just also happens to succeed
+      // whenever the line above did.
+      const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${id}`);
+      setDocuments(docs);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -278,7 +297,7 @@ export default function ClientBrokerDetailPage({ params }: { params: { id: strin
       <Card className="mt-4">
         <CardHeader>
           <CardTitle>Verification history</CardTitle>
-          <CardDescription>The broker's own one-time verification pipeline.</CardDescription>
+          <CardDescription>The broker&apos;s own one-time verification pipeline.</CardDescription>
         </CardHeader>
         <CardContent>
           {broker.statusEvents.length === 0 ? (
@@ -292,6 +311,31 @@ export default function ClientBrokerDetailPage({ params }: { params: { id: strin
               ))}
             </ul>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Documents</CardTitle>
+          <CardDescription>Evidence the broker has uploaded — visible while your access remains granted.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-2">
+          {documents.length === 0 && <p className="text-sm text-muted-foreground">None uploaded yet.</p>}
+          {documents.map((d) => (
+            <div key={d.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm">
+              <button
+                type="button"
+                className="text-left text-primary hover:underline"
+                onClick={() => apiOpenFile(`/documents/${d.id}/file`, d.originalFilename ?? "document")}
+              >
+                {d.docType} — {d.originalFilename ?? "file"}
+              </button>
+              <div className="flex items-center gap-2">
+                <Badge variant={docReviewVariant(d.reviewStatus)}>{d.reviewStatus}</Badge>
+                <span className="text-xs text-muted-foreground">{new Date(d.uploadedAt).toLocaleDateString()}</span>
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
 

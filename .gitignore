@@ -10,3 +10,4 @@ build
 coverage
 packages/db/node_modules
 *.tsbuildinfo
+apps/api/uploads

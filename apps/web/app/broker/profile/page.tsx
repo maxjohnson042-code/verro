@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, apiOpenFile } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +49,7 @@ interface BusinessMembership {
 interface DocumentRow {
   id: string;
   docType: string;
-  storageKey: string;
+  originalFilename: string | null;
   reviewStatus: string;
   uploadedAt: string;
 }
@@ -280,13 +280,24 @@ export default function BrokerProfilePage() {
               <CardTitle>Documents</CardTitle>
             </CardHeader>
             <CardContent>
-              {profile.documents.length === 0 && <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>}
+              {profile.documents.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No documents uploaded yet.{" "}
+                  <a href="/broker" className="text-primary hover:underline">
+                    Upload from your dashboard →
+                  </a>
+                </p>
+              )}
               <ul className="grid gap-1 text-sm">
                 {profile.documents.map((d) => (
                   <li key={d.id} className="flex items-center justify-between">
-                    <span>
-                      {d.docType} — {d.storageKey}
-                    </span>
+                    <button
+                      type="button"
+                      className="text-left text-primary hover:underline"
+                      onClick={() => apiOpenFile(`/documents/${d.id}/file`, d.originalFilename ?? "document")}
+                    >
+                      {d.docType} — {d.originalFilename ?? "file"}
+                    </button>
                     <span className="text-xs text-muted-foreground">
                       {d.reviewStatus} · {new Date(d.uploadedAt).toLocaleDateString()}
                     </span>

@@ -532,7 +532,19 @@ model Document {
   brokerBusinessId    String?
   docType             String
   storageKey          String
+  // Milestone 3: real upload flow (local disk in dev - see
+  // LocalStorageService; swap-in for S3 is a storage-layer-only change).
+  // originalFilename/mimeType/fileSizeBytes are captured at upload time
+  // for download/display; reviewedBy*/reviewNotes are the admin's
+  // decision trail, separate from the broker-facing reviewStatus itself.
+  originalFilename    String?
+  mimeType            String?
+  fileSizeBytes       Int?
+  uploadedByUserId    String?
   reviewStatus        DocReviewStatus @default(PENDING)
+  reviewedByUserId    String?
+  reviewedAt          DateTime?
+  reviewNotes         String?
   verificationCheckId String?
   uploadedAt          DateTime        @default(now())
 

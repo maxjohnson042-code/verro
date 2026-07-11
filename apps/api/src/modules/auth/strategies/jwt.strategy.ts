@@ -7,10 +7,16 @@ import type { AuthenticatedUser } from "../auth.service";
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, "jwt") {
   constructor(config: ConfigService) {
+    const configuredSecret = config.get<string>("JWT_SECRET");
+    const isProduction = config.get<string>("NODE_ENV") === "production";
+    if (isProduction && !configuredSecret) {
+      throw new Error("JWT_SECRET must be configured in production");
+    }
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>("JWT_SECRET") ?? "verro-dev-secret-change-me",
+      secretOrKey: configuredSecret ?? "verro-dev-secret-change-me",
     });
   }
 

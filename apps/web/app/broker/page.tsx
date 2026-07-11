@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, apiOpenFile } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +54,36 @@ interface ConnectOptions {
   activeAggregator: Organization | null;
   lenders: Organization[];
 }
+interface DocumentRow {
+  id: string;
+  docType: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  reviewStatus: string;
+  reviewNotes: string | null;
+  uploadedAt: string;
+}
+
+// Mirrors apps/api/src/modules/documents/doc-types.ts - docType stays a
+// free string on the Document model, so this is just the UI vocabulary.
+const BROKER_DOC_TYPES = [
+  { value: "PHOTO_ID", label: "Photo ID (driver's licence / passport)" },
+  { value: "POLICE_CHECK", label: "National police check" },
+  { value: "CERT_IV", label: "Certificate IV in Finance & Mortgage Broking" },
+  { value: "DIPLOMA", label: "Diploma of Finance & Mortgage Broking Management" },
+  { value: "PI_INSURANCE", label: "Professional indemnity insurance certificate" },
+  { value: "ASSOCIATION_MEMBERSHIP", label: "Association membership certificate (MFAA/FBAA)" },
+  { value: "ASIC_EXTRACT", label: "ASIC company extract" },
+  { value: "ABN_REGISTRATION", label: "ABN registration" },
+  { value: "OTHER", label: "Other supporting document" },
+];
+const DOC_TYPE_LABEL: Record<string, string> = Object.fromEntries(BROKER_DOC_TYPES.map((d) => [d.value, d.label]));
+
+function docReviewVariant(status: string): "default" | "success" | "destructive" | "secondary" {
+  if (status === "APPROVED") return "success";
+  if (status === "REJECTED") return "destructive";
+  return "secondary";
+}
 
 const ORG_STATUS_LABEL: Record<string, string> = {
   PENDING_ACCEPTANCE: "waiting on their acceptance",
@@ -97,8 +127,12 @@ export default function BrokerDashboardPage() {
   const [loggedOut, setLoggedOut] = useState(false);
   const [profile, setProfile] = useState<BrokerProfile | null>(null);
   const [options, setOptions] = useState<ConnectOptions | null>(null);
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [uploadDocType, setUploadDocType] = useState(BROKER_DOC_TYPES[0].value);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   // Form state for each inline task.
   const [legalName, setLegalName] = useState("");
@@ -146,6 +180,8 @@ export default function BrokerDashboardPage() {
         const opts = await apiFetch<ConnectOptions>(`/brokers/${data.id}/connect-options`);
         setOptions(opts);
       }
+      const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${data.id}`);
+      setDocuments(docs);
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
     }
@@ -153,6 +189,34 @@ export default function BrokerDashboardPage() {
 
   function toggleTask(id: string) {
     setOpenTask((prev) => (prev === id ? null : id));
+  }
+
+  async function handleUpload() {
+    if (!profile || !uploadFile) return;
+    setUploading(true);
+    setStatus(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      formData.append("docType", uploadDocType);
+      await apiFetch("/documents", { method: "POST", body: formData });
+      setUploadFile(null);
+      setStatus("Document uploaded.");
+      const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${profile.id}`);
+      setDocuments(docs);
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleViewDocument(doc: DocumentRow) {
+    try {
+      await apiOpenFile(`/documents/${doc.id}/file`, doc.originalFilename ?? "document");
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
   }
 
   async function runTask(action: () => Promise<unknown>, successMessage: string) {
@@ -541,6 +605,67 @@ export default function BrokerDashboardPage() {
               </Button>
             </div>
           </TaskRow>
+        </CardContent>
+      </Card>
+
+      {/* Supporting documents - evidence for the self-declared fields above
+          (ID, police check, Cert IV/Diploma, PI insurance, association
+          membership). Upload is always available and never blocks the
+          verification pipeline; Admin reviews and marks approved/rejected. */}
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Supporting documents</CardTitle>
+          <CardDescription>
+            Upload evidence for anything above whenever you have it on hand — certificates, insurance schedule,
+            ID, police check.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          {documents.length === 0 && <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>}
+          {documents.length > 0 && (
+            <ul className="grid gap-2">
+              {documents.map((d) => (
+                <li
+                  key={d.id}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm"
+                >
+                  <div className="grid">
+                    <button type="button" onClick={() => handleViewDocument(d)} className="text-left text-primary hover:underline">
+                      {DOC_TYPE_LABEL[d.docType] ?? d.docType}
+                    </button>
+                    <span className="text-xs text-muted-foreground">
+                      {d.originalFilename} · {new Date(d.uploadedAt).toLocaleDateString()}
+                      {d.reviewNotes ? ` — ${d.reviewNotes}` : ""}
+                    </span>
+                  </div>
+                  <Badge variant={docReviewVariant(d.reviewStatus)}>{d.reviewStatus}</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+            <div className="grid gap-1.5">
+              <Label htmlFor="docType">Document type</Label>
+              <Select id="docType" value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value)}>
+                {BROKER_DOC_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="docFile">File</Label>
+              <Input
+                id="docFile"
+                type="file"
+                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+              />
+            </div>
+            <Button type="button" disabled={!uploadFile || uploading} onClick={handleUpload}>
+              {uploading ? "Uploading..." : "Upload"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

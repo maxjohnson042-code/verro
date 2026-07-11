@@ -81,9 +81,10 @@ packages/
   and `GET /verification/stale` lists checks past that date.
 
 **Stubbed — needs your accounts/credentials to go live:**
-- **Auth.** No Cognito wiring yet. There's no login; anyone can call any
-  endpoint. This is the first thing to add once you're past pure schema/API
-  validation — don't put real broker data through this scaffold as-is.
+- **Production identity.** Local email/password login, JWT authentication,
+  and role-based endpoint guards are implemented. Cognito is not wired yet;
+  the current browser session uses local storage and is suitable for local
+  development only. Production startup requires an explicit `JWT_SECRET`.
 - **Document storage.** `DocumentsService.recordUpload` just writes a
   `storageKey` string to Postgres; it doesn't talk to S3. Add presigned
   upload URLs once you have an AWS account and bucket.
