@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug API (apps/api)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start:debug", "--workspace=@verro/api"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "restart": true,
+      "protocol": "inspector"
+    }
+  ]
+}

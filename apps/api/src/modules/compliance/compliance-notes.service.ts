@@ -38,6 +38,7 @@ export class ComplianceNotesService {
         brokerId,
         OR: [{ organizationId: requestingOrganizationId }, { visibility: "NETWORK_VISIBLE" }],
       },
+      include: { organization: true },
       orderBy: { createdAt: "desc" },
     });
   }

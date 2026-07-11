@@ -1,17 +1,19 @@
 import type { ReactNode } from "react";
+import { NavShell } from "@/components/nav-shell";
 
 export default function BrokerLayout({ children }: { children: ReactNode }) {
   return (
-    <div>
-      <header style={{ padding: 16, borderBottom: "1px solid #ddd" }}>
-        <strong>Verro — Broker</strong>
-        <nav style={{ display: "inline-flex", gap: 12, marginLeft: 24 }}>
-          <a href="/broker">Dashboard</a>
-          <a href="/broker/onboarding">Onboarding</a>
-          <a href="/broker/profile">Profile</a>
-        </nav>
-      </header>
-      <main style={{ padding: 32 }}>{children}</main>
-    </div>
+    <NavShell
+      brand="Verro — Broker"
+      items={[
+        { href: "/broker", label: "Dashboard" },
+        { href: "/broker/onboarding", label: "Create account" },
+        { href: "/broker/connect", label: "Connect" },
+        { href: "/broker/profile", label: "Profile" },
+        { href: "/broker/login", label: "Login" },
+      ]}
+    >
+      {children}
+    </NavShell>
   );
 }

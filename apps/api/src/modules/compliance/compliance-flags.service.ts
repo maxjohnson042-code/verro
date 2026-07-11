@@ -48,6 +48,10 @@ export class ComplianceFlagsService {
   async listForBroker(brokerId: string) {
     // Always network-visible to any org with a GRANTED AccessGrant - no
     // org-scoping filter needed here, unlike ComplianceNotesService.
-    return this.prisma.complianceFlag.findMany({ where: { brokerId }, orderBy: { createdAt: "desc" } });
+    return this.prisma.complianceFlag.findMany({
+      where: { brokerId },
+      include: { raisedByOrganization: true },
+      orderBy: { createdAt: "desc" },
+    });
   }
 }

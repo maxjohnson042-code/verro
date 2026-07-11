@@ -1,16 +1,17 @@
 import type { ReactNode } from "react";
+import { NavShell } from "@/components/nav-shell";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
-    <div>
-      <header style={{ padding: 16, borderBottom: "1px solid #ddd" }}>
-        <strong>Verro — Internal Admin</strong>
-        <nav style={{ display: "inline-flex", gap: 12, marginLeft: 24 }}>
-          <a href="/admin">Dashboard</a>
-          <a href="/admin/review">Review queue</a>
-        </nav>
-      </header>
-      <main style={{ padding: 32 }}>{children}</main>
-    </div>
+    <NavShell
+      brand="Verro — Internal Admin"
+      items={[
+        { href: "/admin", label: "Dashboard" },
+        { href: "/admin/review", label: "Review queue" },
+        { href: "/admin/login", label: "Login" },
+      ]}
+    >
+      {children}
+    </NavShell>
   );
 }

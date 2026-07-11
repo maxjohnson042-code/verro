@@ -21,11 +21,18 @@
 //    check currency is a single global policy: every check type expires
 //    12 months after it was run, platform-wide (not configurable per
 //    organization).
-//  - BrokerRelationship (individual-to-org) and BrokerBusinessRelationship
-//    (business-to-org) both carry their own status - accreditation is
-//    still each organization's own decision even though verification is
-//    shared. BrokerRelationship optionally records which business the
-//    individual was operating under when the relationship was formed.
+//  - Verification (IDV/screening/doc-review/admin approval) is a ONE-TIME
+//    pipeline that runs on Broker.overallStatus (BrokerVerificationStatus,
+//    audited via BrokerStatusEvent) - not repeated per organization. Only
+//    once that reaches ACTIVE can a BrokerRelationship be created at all
+//    (enforced in OnboardingService.addRelationship). BrokerRelationship
+//    (individual-to-org) and BrokerBusinessRelationship (business-to-org)
+//    then carry their own much thinner RelationshipStatus - a single
+//    lightweight accept step per organization, plus
+//    FLAGGED/SUSPENDED/REVOKED for an org's own decision to cut a broker
+//    off from just their organization. BrokerRelationship optionally
+//    records which business the individual was operating under when the
+//    relationship was formed.
 //  - AccessGrant is the broker-controlled consent mechanism (Section 1.1 /
 //    "Data sharing & consent" epic). Resolved decision: revocation is
 //    never blocked, even while an organization holds an ACTIVE
@@ -57,11 +64,13 @@ enum OrgType {
   INTERNAL
 }
 
-// Mirrors the broker relationship state machine in Section 2 of the
-// architecture doc. Also reused for Broker.overallStatus as a display
-// rollup, and for BrokerBusinessRelationship.status.
-enum RelationshipStatus {
-  INVITED
+// The broker's ONE global verification pipeline (Section 2, reworked):
+// identity, screening, and document review happen once per broker, not
+// once per organization relationship - this is the "verify once, trusted
+// by the network" thesis actually enforced in the state machine, not just
+// the data model. Broker.overallStatus is the real source of truth here
+// (see the Broker model), driven by BrokerStatusEvent.
+enum BrokerVerificationStatus {
   DRAFT
   SUBMITTED
   IDV_PENDING
@@ -69,9 +78,43 @@ enum RelationshipStatus {
   DOC_REVIEW_PENDING
   PENDING_ADMIN_APPROVAL
   ACTIVE
+  DECLINED
+  SUSPENDED
+  REVOKED
+}
+
+// Per-organization relationship status - deliberately thin. A broker only
+// reaches PENDING_ACCEPTANCE once their BrokerVerificationStatus is
+// already ACTIVE (enforced in OnboardingService.addRelationship), so
+// there's no IDV/screening/doc-review here to duplicate - the org just
+// does one lightweight accept. FLAGGED/SUSPENDED/REVOKED stay
+// per-relationship since an individual org can still cut a broker off
+// from just their organization without touching the broker's status
+// anywhere else. Shared by BrokerRelationship and
+// BrokerBusinessRelationship.
+//
+// CREDIT_REP_PENDING and ACCREDITATION_PENDING (checklist rework) are
+// type-specific intermediate stages, same pattern as BrokerVerificationStatus
+// having stages that only make sense for one kind of row:
+//   CREDIT_REP_PENDING - AGGREGATOR relationships only. The aggregator has
+//     approved the broker but hasn't yet appointed them as a credit
+//     representative / registered them with ASIC - see
+//     BrokerRelationship.creditRepNumber. ACTIVE is blocked until that's
+//     recorded (ComplianceService.transition).
+//   ACCREDITATION_PENDING - LENDER relationships only. The lender has
+//     accepted the relationship but the broker hasn't completed all
+//     required TrainingRecord items yet (responsible lending, BID, privacy/
+//     AML-CTF, CRM, product/policy training). ACTIVE is blocked until every
+//     TrainingRecord for the relationship is completed.
+enum RelationshipStatus {
+  INVITED
+  PENDING_ACCEPTANCE
+  CREDIT_REP_PENDING
+  ACCREDITATION_PENDING
+  ACTIVE
+  DECLINED
   FLAGGED
   SUSPENDED
-  DECLINED
   REVOKED
 }
 
@@ -193,9 +236,36 @@ model Broker {
   // ACL/CR status - see BrokerBusiness for the business-level ACL/CRN.
   personalCrn String?
 
-  // Derived rollup for display only - source of truth is always the
-  // relevant BrokerRelationship.status. See Section 1 of the arch doc.
-  overallStatus RelationshipStatus @default(DRAFT)
+  // Epic: Broker onboarding - association link (self-declared; MFAA/FBAA
+  // have no verification API today, see Section 5 of the arch doc, so
+  // this stays a plain declared field until/unless that changes).
+  associationName             String?
+  associationMembershipNumber String?
+
+  // Checklist rework - qualifications, licensing structure, and PI
+  // insurance, captured as self-declared record-keeping fields during
+  // onboarding (evidence itself is uploaded as a Document with a matching
+  // docType, e.g. "CERT_IV"/"DIPLOMA"/"PI_INSURANCE" - see Document).
+  // These don't gate the verification pipeline themselves (DOC_REVIEW_PENDING
+  // already covers document review generically); they exist so the record
+  // is visible on the broker's profile and to Admin/aggregators/lenders.
+  certIvCompletedAt   DateTime?
+  diplomaCompletedAt  DateTime?
+  cpdHoursCurrentYear Int?
+
+  piInsurancePolicyNumber String?
+  piInsuranceExpiryAt     DateTime?
+
+  // Epic: Broker onboarding - attestation to privacy policy / T&Cs prior
+  // to onboarding. Null until accepted; submitOnboarding() requires this
+  // to be set before the broker's verification pipeline can be submitted.
+  attestedAt DateTime?
+
+  // Real source of truth for the broker's ONE global verification
+  // pipeline (Section 2, reworked) - driven by BrokerStatusEvent, not a
+  // display rollup. A broker must reach ACTIVE here before they can
+  // connect with any organization (see OnboardingService.addRelationship).
+  overallStatus BrokerVerificationStatus @default(DRAFT)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -207,6 +277,13 @@ model Broker {
   accessGrants         AccessGrant[]
   complianceNotes      ComplianceNote[]
   complianceFlags      ComplianceFlag[]
+  statusEvents         BrokerStatusEvent[]
+  // Login identity for this broker (Milestone 2 auth) - back-relation for
+  // PortalUser.brokerId. Nullable because a Broker row can be created via
+  // /brokers before/without a login existing yet in edge cases (e.g.
+  // future org-initiated invites), though the self-serve signup flow
+  // creates both together.
+  portalUser           PortalUser?
 
   @@index([lastName, firstName])
 }
@@ -276,13 +353,17 @@ model BrokerBusinessMembership {
 
 // Business-level accreditation with an organization (typically the
 // aggregation agreement between a broking business and an aggregator).
-// Mirrors BrokerRelationship's shape and state machine (Section 2) but at
-// the business level rather than the individual level.
+// Mirrors BrokerRelationship's shape and thin per-org status set (Section
+// 2) but at the business level rather than the individual level. There's
+// no separate business-level verification pipeline built yet (out of
+// scope for this pass) - this still defaults to PENDING_ACCEPTANCE for
+// consistency, but nothing currently gates it the way
+// OnboardingService.addRelationship gates individual relationships.
 model BrokerBusinessRelationship {
   id               String             @id @default(uuid())
   brokerBusinessId String
   organizationId   String
-  status           RelationshipStatus @default(DRAFT)
+  status           RelationshipStatus @default(PENDING_ACCEPTANCE)
   accreditedDate   DateTime?
   nextReviewDate   DateTime?
 
@@ -326,24 +407,79 @@ model Organization {
   aclCreditRepresentatives BrokerBusiness[] @relation("AclCreditRepresentatives")
   complianceNotesAuthored ComplianceNote[]
   complianceFlagsRaised   ComplianceFlag[]
+  // Which lenders this org (as an aggregator) has a panel agreement with,
+  // and/or which aggregators this org (as a lender) accepts brokers
+  // through - see AggregatorLenderPanel.
+  panelsAsAggregator AggregatorLenderPanel[] @relation("PanelAsAggregator")
+  panelsAsLender     AggregatorLenderPanel[] @relation("PanelAsLender")
 
   @@index([orgType])
 }
 
+// Which lenders a given aggregator has a panel agreement with - a broker
+// can only connect to a lender that's on their current aggregator's
+// panel (Section 2, chain-of-trust rework: association accepts first,
+// then the aggregator, then only panel lenders become selectable).
+model AggregatorLenderPanel {
+  id              String @id @default(uuid())
+  aggregatorOrgId String
+  lenderOrgId     String
+
+  createdAt DateTime @default(now())
+
+  aggregatorOrg Organization @relation("PanelAsAggregator", fields: [aggregatorOrgId], references: [id])
+  lenderOrg     Organization @relation("PanelAsLender", fields: [lenderOrgId], references: [id])
+
+  @@unique([aggregatorOrgId, lenderOrgId])
+  @@index([aggregatorOrgId])
+  @@index([lenderOrgId])
+}
+
 // Individual-level relationship with an organization (matches the BRD's
 // broker-centric onboarding flow: broker selects an aggregator/lender/
-// association directly). Optionally records which broker business the
-// individual was operating under when the relationship was formed/is
-// currently active, since that context matters for compliance history
-// even as the individual moves between businesses over time.
+// association directly). Only created once the broker's own
+// BrokerVerificationStatus is ACTIVE (Section 2, reworked) - so this
+// starts at PENDING_ACCEPTANCE, a single lightweight accept step, rather
+// than repeating IDV/screening/doc-review per organization.
+//
+// Chain-of-trust ordering (Section 2, further reworked): association and
+// aggregator are independent of each other - a broker can connect to
+// either first, in any order. A lender connection always requires an
+// ACTIVE aggregator relationship first (exclusive - connecting to a new
+// aggregator auto-revokes the old one), restricted to that aggregator's
+// AggregatorLenderPanel. An ACTIVE association is not required for a
+// lender connection - most lenders expect one in practice, but it isn't
+// enforced. Losing the aggregator relationship (broker switches, or the
+// aggregator revokes them) cascades to REVOKE every dependent lender
+// relationship, since the lender only ever saw the broker through that
+// aggregator's sponsorship - see OnboardingService.addRelationship and
+// ComplianceService's cascade logic. Optionally records which broker
+// business the individual was operating under when the relationship was
+// formed/is currently active, since that context matters for compliance
+// history even as the individual moves between businesses over time.
+//
+// Checklist rework: reaching ACTIVE now means something type-specific -
+// see ComplianceService.transition. AGGREGATOR relationships require
+// creditRepNumber to be set first (the aggregator's ACL appointment /ASIC
+// registration, tracked here since it's specific to that aggregator
+// relationship - a broker can hold a different CR number with a new
+// aggregator after switching). LENDER relationships require every
+// TrainingRecord for the relationship to be completed first (responsible
+// lending, best-interests-duty, privacy/AML-CTF, CRM, product/policy
+// training - auto-seeded when the relationship is created, see
+// OnboardingService.addRelationship).
 model BrokerRelationship {
   id               String             @id @default(uuid())
   brokerId         String
   organizationId   String
   brokerBusinessId String?
-  status           RelationshipStatus @default(DRAFT)
+  status           RelationshipStatus @default(PENDING_ACCEPTANCE)
   accreditedDate   DateTime?
   nextReviewDate   DateTime?
+
+  // AGGREGATOR relationships only - see model doc comment above.
+  creditRepNumber       String?
+  creditRepAuthorisedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -447,22 +583,60 @@ model StatusEvent {
   @@index([businessRelationshipId, createdAt])
 }
 
+// Append-only audit trail for the broker's ONE global verification
+// pipeline (Section 2, reworked) - separate from StatusEvent because it's
+// typed to BrokerVerificationStatus rather than RelationshipStatus
+// (Prisma enums can't be shared/unioned across fields). This is what
+// Admin's broker verification queue is driven by and what a broker sees
+// as their own progress on the profile page.
+model BrokerStatusEvent {
+  id          String                     @id @default(uuid())
+  brokerId    String
+  fromStatus  BrokerVerificationStatus?
+  toStatus    BrokerVerificationStatus
+  actionedBy  String?
+  reason      String?
+
+  createdAt DateTime @default(now())
+
+  broker         Broker      @relation(fields: [brokerId], references: [id])
+  actionedByUser PortalUser? @relation(fields: [actionedBy], references: [id])
+
+  @@index([brokerId, createdAt])
+}
+
+// The single login identity across all three portals - a broker, a
+// client organization's staff member, or internal Verro admin/reviewer
+// all authenticate as a PortalUser, distinguished by `role` (and
+// `organizationId` for client staff). Deliberately kept separate from
+// Broker (which holds compliance-relevant PII/status, not credentials) so
+// that non-broker roles - who have no Broker row at all - still fit the
+// same table. For role = BROKER, brokerId links to the corresponding
+// Broker profile; for every other role it stays null.
 model PortalUser {
   id             String     @id @default(uuid())
   organizationId String?
+  brokerId       String?    @unique
   role           PortalRole
   firstName      String?
   lastName       String?
   jobTitle       String?
   phone          String?
   email          String     @unique
+  // Local auth for now (Milestone 2) - nullable so this table can later
+  // carry Cognito-backed users (no local password) without a schema
+  // change; login just checks whichever of passwordHash / external IdP
+  // sub is populated.
+  passwordHash   String?
   isActive       Boolean    @default(true)
   lastLoginAt    DateTime?
 
   createdAt DateTime @default(now())
 
   organization    Organization?    @relation(fields: [organizationId], references: [id])
+  broker          Broker?          @relation(fields: [brokerId], references: [id])
   statusEvents    StatusEvent[]
+  brokerStatusEvents BrokerStatusEvent[]
   complianceNotes ComplianceNote[]
   complianceFlagsRaised   ComplianceFlag[] @relation("FlagRaisedBy")
   complianceFlagsResolved ComplianceFlag[] @relation("FlagResolvedBy")

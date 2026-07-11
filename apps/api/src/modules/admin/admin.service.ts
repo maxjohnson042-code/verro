@@ -2,34 +2,69 @@ import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 
 // Epic: Verro 'admin' review (Section 3) - internal ops/compliance
-// team's review queue, distinct from the Client portal.
+// team's review queues, distinct from the Client portal.
+//
+// Section 2 (reworked): verification is a broker-level pipeline, so the
+// main review queue is now one row per BROKER, not per broker-org
+// relationship - admin verifies the person once. Once a broker reaches
+// ACTIVE, any relationship they create still needs one lightweight accept
+// from the organization side, which is a separate, much smaller queue.
 @Injectable()
 export class AdminService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getReviewQueue() {
-    return this.prisma.brokerRelationship.findMany({
+  async getVerificationQueue() {
+    return this.prisma.broker.findMany({
       where: {
-        status: {
-          in: [
-            "SUBMITTED",
-            "IDV_PENDING",
-            "SCREENING_PENDING",
-            "DOC_REVIEW_PENDING",
-            "PENDING_ADMIN_APPROVAL",
-          ],
+        overallStatus: {
+          in: ["SUBMITTED", "IDV_PENDING", "SCREENING_PENDING", "DOC_REVIEW_PENDING", "PENDING_ADMIN_APPROVAL"],
         },
       },
-      include: { broker: true, organization: true },
       orderBy: { updatedAt: "asc" },
     });
   }
 
-  async getFlaggedAndSuspended() {
+  // Includes CREDIT_REP_PENDING/ACCREDITATION_PENDING (checklist rework) -
+  // both still need an org-side action (recording the CR appointment, or
+  // ticking off training) before the relationship is really "accepted",
+  // same as a plain PENDING_ACCEPTANCE row. Also pulls the broker's
+  // association/aggregator relationships as context, since the whole point
+  // of the chain of trust is that a lender or aggregator reviewing this row
+  // can see "association and aggregator are both happy" (and, once an
+  // aggregator switch has happened, the broker's history) without having to
+  // look the broker up separately.
+  async getPendingAcceptances() {
     return this.prisma.brokerRelationship.findMany({
-      where: { status: { in: ["FLAGGED", "SUSPENDED"] } },
-      include: { broker: true, organization: true },
-      orderBy: { updatedAt: "desc" },
+      where: { status: { in: ["PENDING_ACCEPTANCE", "CREDIT_REP_PENDING", "ACCREDITATION_PENDING"] } },
+      include: {
+        broker: {
+          include: {
+            relationships: {
+              where: { organization: { orgType: { in: ["ASSOCIATION", "AGGREGATOR"] } } },
+              include: { organization: true },
+              orderBy: { updatedAt: "desc" },
+            },
+          },
+        },
+        organization: true,
+        trainingRecords: { orderBy: { createdAt: "asc" } },
+      },
+      orderBy: { createdAt: "asc" },
     });
+  }
+
+  async getFlaggedAndSuspended() {
+    const [brokers, relationships] = await Promise.all([
+      this.prisma.broker.findMany({
+        where: { overallStatus: { in: ["SUSPENDED"] } },
+        orderBy: { updatedAt: "desc" },
+      }),
+      this.prisma.brokerRelationship.findMany({
+        where: { status: { in: ["FLAGGED", "SUSPENDED"] } },
+        include: { broker: true, organization: true, trainingRecords: { orderBy: { createdAt: "asc" } } },
+        orderBy: { updatedAt: "desc" },
+      }),
+    ]);
+    return { brokers, relationships };
   }
 }
