@@ -9,6 +9,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BrokerAvatar } from "@/components/broker-avatar";
 
 // Broker portal home. Section 2 (reworked) split verification into "one
 // global pipeline" + "per-org relationships"; this page is the single hub
@@ -37,6 +38,8 @@ interface RelationshipSummary {
 }
 interface BrokerProfile {
   id: string;
+  firstName: string;
+  lastName: string;
   overallStatus: string;
   attestedAt: string | null;
   associationName: string | null;
@@ -133,6 +136,9 @@ export default function BrokerDashboardPage() {
   const [uploadDocType, setUploadDocType] = useState(BROKER_DOC_TYPES[0].value);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoVersion, setPhotoVersion] = useState(0);
 
   // Form state for each inline task.
   const [legalName, setLegalName] = useState("");
@@ -208,6 +214,25 @@ export default function BrokerDashboardPage() {
       setStatus(`Error: ${(err as Error).message}`);
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handlePhotoUpload() {
+    if (!profile || !photoFile) return;
+    setUploadingPhoto(true);
+    setStatus(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", photoFile);
+      formData.append("docType", "PROFILE_PHOTO");
+      await apiFetch("/documents", { method: "POST", body: formData });
+      setPhotoFile(null);
+      setPhotoVersion((v) => v + 1);
+      setStatus("Profile photo updated.");
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    } finally {
+      setUploadingPhoto(false);
     }
   }
 
@@ -290,10 +315,29 @@ export default function BrokerDashboardPage() {
   return (
     <div className="mx-auto max-w-2xl">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Your activities</h1>
+        <div className="flex items-center gap-3">
+          <BrokerAvatar
+            brokerId={profile.id}
+            firstName={profile.firstName}
+            lastName={profile.lastName}
+            version={photoVersion}
+          />
+          <h1 className="text-xl font-semibold tracking-tight">Your activities</h1>
+        </div>
         <Badge variant={isVerified ? "success" : "secondary"}>{profile.overallStatus.replace(/_/g, " ")}</Badge>
       </div>
-      <p className="mt-1 text-sm text-muted-foreground">
+      <div className="mt-2 flex items-center gap-2">
+        <Input
+          type="file"
+          accept="image/*"
+          className="h-8 max-w-[220px] text-xs"
+          onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+        />
+        <Button type="button" size="sm" variant="outline" disabled={!photoFile || uploadingPhoto} onClick={handlePhotoUpload}>
+          {uploadingPhoto ? "Uploading..." : "Set profile photo"}
+        </Button>
+      </div>
+      <p className="mt-3 text-sm text-muted-foreground">
         Complete these whenever you have the information — nothing here has to be done all at once.
       </p>
 

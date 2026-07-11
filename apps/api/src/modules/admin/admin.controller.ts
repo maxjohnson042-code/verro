@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, UseGuards } from "@nestjs/common";
 import { AdminService } from "./admin.service";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { RolesGuard } from "../auth/guards/roles.guard";
@@ -33,5 +33,12 @@ export class AdminController {
   @Get("flagged")
   getFlaggedAndSuspended() {
     return this.adminService.getFlaggedAndSuspended();
+  }
+
+  // Full cross-org profile for one broker - backs the new unified admin
+  // broker-profile page (linked from the review queue).
+  @Get("brokers/:id")
+  getBrokerFullProfile(@Param("id") id: string) {
+    return this.adminService.getBrokerFullProfile(id);
   }
 }

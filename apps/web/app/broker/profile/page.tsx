@@ -6,6 +6,7 @@ import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BrokerAvatar } from "@/components/broker-avatar";
 
 // Milestone 2: loads the logged-in broker's own profile via
 // GET /brokers/me/profile, resolved from the JWT server-side - no more
@@ -152,7 +153,12 @@ export default function BrokerProfilePage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-xl font-semibold tracking-tight">Broker profile</h1>
+      <div className="flex items-center gap-3">
+        {profile && (
+          <BrokerAvatar brokerId={profile.id} firstName={profile.firstName} lastName={profile.lastName} />
+        )}
+        <h1 className="text-xl font-semibold tracking-tight">Broker profile</h1>
+      </div>
 
       {status && <p className="mt-3 text-sm text-muted-foreground">{status}</p>}
 

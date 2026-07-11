@@ -303,7 +303,10 @@ export default function AdminReviewQueuePage() {
                             <button type="button" className="text-left hover:underline" onClick={() => toggleBrokerDocuments(b.id)}>
                               {b.firstName} {b.lastName}
                             </button>{" "}
-                            <span className="text-xs text-muted-foreground">({b.email})</span>
+                            <span className="text-xs text-muted-foreground">({b.email})</span>{" "}
+                            <a href={`/admin/brokers/${b.id}`} className="text-xs text-primary hover:underline">
+                              View profile →
+                            </a>
                           </td>
                           <td className="px-4 py-3">
                             <Badge variant={statusVariant(b.overallStatus)}>{b.overallStatus}</Badge>
@@ -491,7 +494,10 @@ export default function AdminReviewQueuePage() {
                   {flagged.brokers.map((b) => (
                     <div key={b.id} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
                       <span>
-                        {b.firstName} {b.lastName}
+                        {b.firstName} {b.lastName}{" "}
+                        <a href={`/admin/brokers/${b.id}`} className="text-xs text-primary hover:underline">
+                          View profile →
+                        </a>
                       </span>
                       <div className="flex items-center gap-2">
                         <Badge variant={statusVariant(b.overallStatus)}>{b.overallStatus}</Badge>

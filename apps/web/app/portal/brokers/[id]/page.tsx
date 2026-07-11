@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BrokerAvatar } from "@/components/broker-avatar";
 
 // Epic: Client dashboard - broker detail view, via
 // GET /organizations/me/brokers/:brokerId. The API re-checks the GRANTED
@@ -199,20 +200,64 @@ export default function ClientBrokerDetailPage({ params }: { params: { id: strin
   const auth = getAuth();
   const ourOrgId = auth?.user.organizationId;
 
+  // Outstanding actions relevant to THIS org - deliberately doesn't
+  // reference other orgs' relationships (see the comment on
+  // OrganizationsService.getBrokerDetail / AdminService.getBrokerFullProfile
+  // for why cross-org relationship data stays admin-only). Mixes the
+  // relationship-with-us status with the broker's general checklist gaps,
+  // since both already show up elsewhere on this page - this is just a
+  // quick summary of what's not done yet.
+  const outstanding: string[] = [];
+  if (ourRelationship?.status === "PENDING_ACCEPTANCE") {
+    outstanding.push("Waiting on your organization to accept this connection");
+  }
+  if (ourRelationship?.status === "CREDIT_REP_PENDING") {
+    outstanding.push("Credit representative number not yet recorded");
+  }
+  if (ourRelationship?.status === "ACCREDITATION_PENDING" && ourRelationship.trainingRecords.length > 0) {
+    const remaining = ourRelationship.trainingRecords.filter((t) => !t.completed).length;
+    outstanding.push(`${remaining} of ${ourRelationship.trainingRecords.length} accreditation modules outstanding`);
+  }
+  if (!broker.businessMemberships[0]) outstanding.push("Business details not provided");
+  if (!broker.certIvCompletedAt) outstanding.push("Qualifications not recorded");
+  if (!broker.piInsurancePolicyNumber) outstanding.push("PI insurance not recorded");
+  if (!broker.associationName) outstanding.push("Association membership not declared");
+  const pendingDocs = documents.filter((d) => d.reviewStatus === "PENDING").length;
+  if (pendingDocs > 0) outstanding.push(`${pendingDocs} document${pendingDocs === 1 ? "" : "s"} awaiting review`);
+
   return (
     <div className="mx-auto max-w-2xl">
       <a href="/portal/brokers" className="text-sm text-primary hover:underline">
         ← Back to brokers
       </a>
       <div className="mt-2 flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">
-          {broker.firstName} {broker.lastName}
-        </h1>
+        <div className="flex items-center gap-3">
+          <BrokerAvatar brokerId={broker.id} firstName={broker.firstName} lastName={broker.lastName} />
+          <h1 className="text-xl font-semibold tracking-tight">
+            {broker.firstName} {broker.lastName}
+          </h1>
+        </div>
         <Badge variant={statusVariant(broker.overallStatus)}>{broker.overallStatus.replace(/_/g, " ")}</Badge>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">{broker.email}</p>
 
       {status && <p className="mt-4 text-sm text-muted-foreground">{status}</p>}
+
+      {outstanding.length > 0 && (
+        <Card className="mt-4 border-destructive/30 bg-destructive/5">
+          <CardHeader>
+            <CardTitle>Outstanding</CardTitle>
+            <CardDescription>What&apos;s not done yet, from your organization&apos;s point of view.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid gap-1 text-sm">
+              {outstanding.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="mt-6">
         <CardHeader>

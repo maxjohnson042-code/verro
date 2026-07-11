@@ -76,7 +76,10 @@ export class OnboardingService {
           include: { organization: true, trainingRecords: true, statusEvents: true },
         },
         businessMemberships: { include: { brokerBusiness: true } },
-        documents: true,
+        // PROFILE_PHOTO is a Document under the hood (see
+        // DocumentsService.PROFILE_PHOTO_DOC_TYPE) but is fetched via its
+        // own avatar endpoint, not listed alongside checklist evidence.
+        documents: { where: { docType: { not: "PROFILE_PHOTO" } } },
         accessGrants: { include: { organization: true } },
         statusEvents: { orderBy: { createdAt: "asc" } },
       },

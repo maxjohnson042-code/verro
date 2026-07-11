@@ -88,6 +88,17 @@ export class DocumentsController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles("BROKER", "CLIENT_STAFF", "CLIENT_ADMIN", "INTERNAL_ADMIN", "INTERNAL_REVIEWER")
+  @Get("broker/:brokerId/photo")
+  async downloadPhoto(@Param("brokerId") brokerId: string, @CurrentUser() user: AuthenticatedUser, @Res() res: Response) {
+    await this.assertCanView(brokerId, user);
+    const { doc, buffer } = await this.documentsService.getPhotoBuffer(brokerId);
+    res.setHeader("Content-Type", doc.mimeType ?? "application/octet-stream");
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.send(buffer);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles("BROKER", "CLIENT_STAFF", "CLIENT_ADMIN", "INTERNAL_ADMIN", "INTERNAL_REVIEWER")
   @Get(":id/file")
   async downloadFile(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser, @Res() res: Response) {
     const { doc, buffer } = await this.documentsService.getFileBuffer(id);

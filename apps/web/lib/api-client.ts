@@ -69,3 +69,22 @@ export async function apiOpenFile(path: string, filename: string): Promise<void>
   document.body.removeChild(link);
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
+
+// Fetches an authenticated image (e.g. a broker's profile photo) and
+// returns an object URL suitable for an <img src>. Returns null on any
+// failure (404 when no photo has been uploaded yet, 403 if access was
+// revoked, etc.) - callers should fall back to a placeholder rather than
+// surface this as an error, since "no photo yet" is an expected state.
+export async function apiFetchImageUrl(path: string): Promise<string | null> {
+  const token = getToken();
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
+}

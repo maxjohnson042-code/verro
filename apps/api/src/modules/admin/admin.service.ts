@@ -1,5 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { OnboardingService } from "../onboarding/onboarding.service";
+import { ComplianceNotesService } from "../compliance/compliance-notes.service";
+import { ComplianceFlagsService } from "../compliance/compliance-flags.service";
 
 // Epic: Verro 'admin' review (Section 3) - internal ops/compliance
 // team's review queues, distinct from the Client portal.
@@ -11,7 +14,27 @@ import { PrismaService } from "../../prisma/prisma.service";
 // from the organization side, which is a separate, much smaller queue.
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly onboardingService: OnboardingService,
+    private readonly complianceNotesService: ComplianceNotesService,
+    private readonly complianceFlagsService: ComplianceFlagsService,
+  ) {}
+
+  // Unified broker profile view (unlike the Client portal's org-scoped
+  // getBrokerDetail, which deliberately hides other orgs' relationships
+  // to preserve broker-controlled consent - Section 1.1) - Admin sees
+  // everything: every organization relationship, all documents, notes
+  // from every organization, and every flag raised against the broker.
+  async getBrokerFullProfile(brokerId: string) {
+    const broker = await this.onboardingService.getBrokerProfile(brokerId);
+    if (!broker) throw new NotFoundException("Broker not found");
+    const [notes, flags] = await Promise.all([
+      this.complianceNotesService.listForBroker(brokerId, "internal-admin"),
+      this.complianceFlagsService.listForBroker(brokerId),
+    ]);
+    return { broker, notes, flags };
+  }
 
   async getVerificationQueue() {
     return this.prisma.broker.findMany({
