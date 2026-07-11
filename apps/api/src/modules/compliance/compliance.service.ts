@@ -104,7 +104,14 @@ export class ComplianceService {
     // changes". Fire-and-forget from the caller's perspective; the
     // service itself just logs today (see NotificationsService), but the
     // wiring point is real so swapping in SES later is a one-file change.
-    await this.notificationsService.sendStatusChangeEmail(relationship.broker.email, relationship.status, toStatus);
+    await this.notificationsService.sendStatusChangeEmail(
+      relationship.broker.email,
+      relationship.broker.firstName,
+      `your relationship with ${relationship.organization.legalName}`,
+      relationship.status,
+      toStatus,
+      reason,
+    );
 
     // Chain-of-trust cascade (Section 2, further reworked): a lender only
     // ever saw this broker through their aggregator's sponsorship, so

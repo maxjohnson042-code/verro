@@ -46,7 +46,14 @@ export class BrokerVerificationService {
       }),
     ]);
 
-    await this.notificationsService.sendStatusChangeEmail(broker.email, broker.overallStatus, toStatus);
+    await this.notificationsService.sendStatusChangeEmail(
+      broker.email,
+      broker.firstName,
+      "your Verro verification",
+      broker.overallStatus,
+      toStatus,
+      reason,
+    );
 
     return updated;
   }

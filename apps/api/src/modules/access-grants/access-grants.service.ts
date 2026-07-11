@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 
 // Epic: Data sharing & consent (Section 3 of the architecture doc).
 // Two paths create an AccessGrant:
@@ -9,7 +10,10 @@ import { PrismaService } from "../../prisma/prisma.service";
 // Nothing about a broker is visible to an organization without a GRANTED row.
 @Injectable()
 export class AccessGrantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async grantOnBrokerInitiated(brokerId: string, organizationId: string) {
     return this.prisma.accessGrant.upsert({
@@ -27,7 +31,7 @@ export class AccessGrantsService {
   }
 
   async requestAccess(brokerId: string, organizationId: string, requestedByUserId: string) {
-    return this.prisma.accessGrant.upsert({
+    const grant = await this.prisma.accessGrant.upsert({
       where: { brokerId_organizationId: { brokerId, organizationId } },
       create: {
         brokerId,
@@ -37,7 +41,22 @@ export class AccessGrantsService {
         requestedByUserId,
       },
       update: {},
+      include: { broker: true, organization: true },
     });
+
+    // Only notify on a genuinely new pending request - re-requesting an
+    // already-decided grant (upsert's update: {} branch) shouldn't spam the
+    // broker with duplicate emails.
+    if (grant.status === "PENDING") {
+      await this.notificationsService.sendAccessGrantNotification(
+        grant.broker.email,
+        grant.broker.firstName,
+        grant.organization.legalName,
+        grant.status,
+      );
+    }
+
+    return grant;
   }
 
   async decide(grantId: string, decision: "GRANTED" | "DENIED", decidedByBrokerId: string) {
