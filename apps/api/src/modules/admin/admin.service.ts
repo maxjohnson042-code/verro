@@ -3,6 +3,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { OnboardingService } from "../onboarding/onboarding.service";
 import { ComplianceNotesService } from "../compliance/compliance-notes.service";
 import { ComplianceFlagsService } from "../compliance/compliance-flags.service";
+import { VerificationService } from "../verification/verification.service";
 
 // Epic: Verro 'admin' review (Section 3) - internal ops/compliance
 // team's review queues, distinct from the Client portal.
@@ -19,6 +20,7 @@ export class AdminService {
     private readonly onboardingService: OnboardingService,
     private readonly complianceNotesService: ComplianceNotesService,
     private readonly complianceFlagsService: ComplianceFlagsService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   // Unified broker profile view (unlike the Client portal's org-scoped
@@ -29,11 +31,20 @@ export class AdminService {
   async getBrokerFullProfile(brokerId: string) {
     const broker = await this.onboardingService.getBrokerProfile(brokerId);
     if (!broker) throw new NotFoundException("Broker not found");
-    const [notes, flags] = await Promise.all([
+    const brokerBusinessIds = broker.businessMemberships.map((m) => m.brokerBusiness.id);
+    const [notes, flags, brokerChecks, businessChecks] = await Promise.all([
       this.complianceNotesService.listForBroker(brokerId, "internal-admin"),
       this.complianceFlagsService.listForBroker(brokerId),
+      this.verificationService.listForBroker(brokerId),
+      this.verificationService.listForBrokerBusinesses(brokerBusinessIds),
     ]);
-    return { broker, notes, flags };
+    // Merge and re-sort by run time - the admin view doesn't need to know
+    // or care whether a given check ran against the broker (IDV) or one of
+    // their businesses (ABN); it's all "checks run on this broker's file".
+    const checks = [...brokerChecks, ...businessChecks].sort(
+      (a, b) => new Date(b.runAt).getTime() - new Date(a.runAt).getTime(),
+    );
+    return { broker, notes, flags, checks };
   }
 
   async getVerificationQueue() {

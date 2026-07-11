@@ -1,6 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AclHolderType, BrokerBusinessMemberRole, BusinessEntityType } from "@verro/db";
+import { VerificationService } from "../verification/verification.service";
 
 // New epic: Broker business & structure. A broking business can be a
 // sole trader (one Broker, one membership row, isPrimary=true) or a
@@ -8,7 +9,12 @@ import { AclHolderType, BrokerBusinessMemberRole, BusinessEntityType } from "@ve
 // block at the top of schema.prisma for the full reasoning.
 @Injectable()
 export class BrokerBusinessService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(BrokerBusinessService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly verificationService: VerificationService,
+  ) {}
 
   async createBusiness(input: {
     legalName: string;
@@ -21,7 +27,22 @@ export class BrokerBusinessService {
     creditRepresentativeNumber?: string;
     aclHolderOrganizationId?: string;
   }) {
-    return this.prisma.brokerBusiness.create({ data: input });
+    const business = await this.prisma.brokerBusiness.create({ data: input });
+
+    // Milestone 2: as soon as a broker gives us an ABN, check it against
+    // the ABR - no separate "verify my ABN" step to remember. Awaited (not
+    // fire-and-forget) since it's one quick HTTP call, but any failure
+    // inside runAbnLookup already resolves to a stored PENDING/FAIL check
+    // rather than throwing, so it can never break business creation itself.
+    if (input.abnAcn?.trim()) {
+      try {
+        await this.verificationService.runAbnLookup({ brokerBusinessId: business.id, abn: input.abnAcn });
+      } catch (err) {
+        this.logger.error(`ABN lookup failed to even run for business ${business.id}: ${(err as Error).message}`);
+      }
+    }
+
+    return business;
   }
 
   // Attaches a broker (individual) to a business. Sole traders get exactly

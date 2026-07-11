@@ -98,10 +98,20 @@ interface ComplianceFlag {
   raisedByOrganization?: { legalName: string };
   createdAt: string;
 }
+interface VerificationCheck {
+  id: string;
+  checkType: string;
+  vendor: string | null;
+  result: string;
+  rawResponse: { error?: string; EntityName?: string; AbnStatus?: string } | null;
+  runAt: string;
+  expiresAt: string;
+}
 interface FullProfileResponse {
   broker: BrokerFull;
   notes: ComplianceNote[];
   flags: ComplianceFlag[];
+  checks: VerificationCheck[];
 }
 
 function statusVariant(status: string): "default" | "success" | "destructive" | "secondary" {
@@ -113,6 +123,13 @@ function statusVariant(status: string): "default" | "success" | "destructive" | 
 function docReviewVariant(status: string): "default" | "success" | "destructive" | "secondary" {
   if (status === "APPROVED") return "success";
   if (status === "REJECTED") return "destructive";
+  return "secondary";
+}
+
+function checkResultVariant(result: string): "default" | "success" | "destructive" | "secondary" {
+  if (result === "PASS") return "success";
+  if (result === "FAIL") return "destructive";
+  if (result === "REVIEW_REQUIRED") return "secondary";
   return "secondary";
 }
 
@@ -197,7 +214,7 @@ export default function AdminBrokerProfilePage({ params }: { params: { id: strin
     return <p className="text-sm text-muted-foreground">Loading...</p>;
   }
 
-  const { broker, notes, flags } = data;
+  const { broker, notes, flags, checks } = data;
 
   // Outstanding actions - the full cross-org picture, unlike the org-scoped
   // version on the Client/FI portal's broker detail page.
@@ -373,6 +390,32 @@ export default function AdminBrokerProfilePage({ params }: { params: { id: strin
               ))}
             </ul>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>External checks</CardTitle>
+          <CardDescription>ABN lookups (ABR) and identity checks run against this broker&apos;s file.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-2">
+          {checks.length === 0 && <p className="text-sm text-muted-foreground">No checks run yet.</p>}
+          {checks.map((c) => (
+            <div key={c.id} className="rounded-md border border-border p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium">
+                  {c.checkType} {c.vendor ? `— ${c.vendor}` : ""}
+                </span>
+                <Badge variant={checkResultVariant(c.result)}>{c.result.replace(/_/g, " ")}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Run {new Date(c.runAt).toLocaleString()}
+                {c.rawResponse?.EntityName ? ` — ${c.rawResponse.EntityName}` : ""}
+                {c.rawResponse?.AbnStatus ? ` (${c.rawResponse.AbnStatus})` : ""}
+                {c.rawResponse?.error ? ` — ${c.rawResponse.error}` : ""}
+              </p>
+            </div>
+          ))}
         </CardContent>
       </Card>
 
