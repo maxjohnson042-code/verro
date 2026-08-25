@@ -1,6 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
-import { LocalStorageService } from "./local-storage.service";
+import { DOCUMENT_STORAGE, DocumentStorage } from "./storage.interface";
 
 // Special docType for the broker's avatar - reuses the same Document
 // model/storage/access-control as checklist evidence (a profile photo is
@@ -10,13 +10,15 @@ import { LocalStorageService } from "./local-storage.service";
 export const PROFILE_PHOTO_DOC_TYPE = "PROFILE_PHOTO";
 
 // Epic: Broker onboarding (document upload) / Security (Section 3).
-// Milestone 3: real upload flow against local disk (see
-// LocalStorageService) - metadata-only storage from Milestone 1 is gone.
+// Milestone 3: real upload flow. Storage backend (S3 vs local disk) is
+// decided once in DocumentsModule's factory provider - this service only
+// ever talks to the DocumentStorage interface, so it doesn't know or care
+// which one is actually in use.
 @Injectable()
 export class DocumentsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storage: LocalStorageService,
+    @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
   ) {}
 
   async uploadForBroker(input: {
@@ -33,7 +35,7 @@ export class DocumentsService {
     if (input.docType === PROFILE_PHOTO_DOC_TYPE && !input.mimeType.startsWith("image/")) {
       throw new BadRequestException("Profile photo must be an image file");
     }
-    const storageKey = this.storage.put(input.brokerId, input.originalFilename, input.buffer);
+    const storageKey = await this.storage.put(input.brokerId, input.originalFilename, input.buffer, input.mimeType);
     return this.prisma.document.create({
       data: {
         brokerId: input.brokerId,
@@ -73,13 +75,13 @@ export class DocumentsService {
 
   async getFileBuffer(documentId: string) {
     const doc = await this.getById(documentId);
-    return { doc, buffer: this.storage.get(doc.storageKey) };
+    return { doc, buffer: await this.storage.get(doc.storageKey) };
   }
 
   async getPhotoBuffer(brokerId: string) {
     const doc = await this.getLatestPhoto(brokerId);
     if (!doc) throw new NotFoundException("No profile photo uploaded");
-    return { doc, buffer: this.storage.get(doc.storageKey) };
+    return { doc, buffer: await this.storage.get(doc.storageKey) };
   }
 
   async setReviewStatus(
