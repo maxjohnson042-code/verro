@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { toast } from "sonner";
+import { CheckCircle2, Circle } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -79,7 +82,11 @@ function TrainingChecklist({ records }: { records: TrainingRecord[] }) {
       <ul className="mt-1.5 grid gap-1 pl-3">
         {records.map((r) => (
           <li key={r.id} className="flex items-center gap-1.5">
-            <span className={r.completed ? "text-success" : "text-muted-foreground"}>{r.completed ? "✓" : "○"}</span>
+            {r.completed ? (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+            ) : (
+              <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )}
             {r.trainingName}
           </li>
         ))}
@@ -93,7 +100,6 @@ export default function BrokerConnectPage() {
   const [profile, setProfile] = useState<BrokerProfile | null>(null);
   const [options, setOptions] = useState<ConnectOptions | null>(null);
   const [busyOrgId, setBusyOrgId] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState<Organization | null>(null);
 
   useEffect(() => {
@@ -115,7 +121,7 @@ export default function BrokerConnectPage() {
         setOptions(opts);
       }
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     }
   }
 
@@ -126,16 +132,15 @@ export default function BrokerConnectPage() {
   async function connect(org: Organization) {
     if (!profile) return;
     setBusyOrgId(org.id);
-    setStatus(null);
     try {
       await apiFetch(`/brokers/${profile.id}/relationships`, {
         method: "POST",
         body: JSON.stringify({ organizationId: org.id }),
       });
-      setStatus(`Connected with ${org.legalName}. They have one lightweight step to accept you.`);
+      toast.success(`Connected with ${org.legalName}. They have one lightweight step to accept you.`);
       await load();
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     } finally {
       setBusyOrgId(null);
       setConfirmSwitch(null);
@@ -311,31 +316,44 @@ export default function BrokerConnectPage() {
         </CardContent>
       </Card>
 
-      {status && <p className="mt-4 text-sm text-muted-foreground">{status}</p>}
-
-      {confirmSwitch && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/40 p-4">
-          <Card className="max-w-sm">
-            <CardHeader>
-              <CardTitle>Switch aggregator?</CardTitle>
-              <CardDescription>
-                Connecting to {confirmSwitch.legalName} will revoke your relationship with{" "}
-                {options.activeAggregator?.legalName}, and every lender you connected through them will be
-                offboarded too. You&apos;ll be able to reconnect to lenders once {confirmSwitch.legalName} accepts
-                you — those lenders will see your history.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setConfirmSwitch(null)}>
-                Cancel
-              </Button>
-              <Button onClick={() => connect(confirmSwitch)} disabled={busyOrgId === confirmSwitch.id}>
-                Confirm switch
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      <AnimatePresence>
+        {confirmSwitch && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 flex items-center justify-center bg-black/40 p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+            >
+              <Card className="max-w-sm">
+                <CardHeader>
+                  <CardTitle>Switch aggregator?</CardTitle>
+                  <CardDescription>
+                    Connecting to {confirmSwitch.legalName} will revoke your relationship with{" "}
+                    {options?.activeAggregator?.legalName}, and every lender you connected through them will be
+                    offboarded too. You&apos;ll be able to reconnect to lenders once {confirmSwitch.legalName} accepts
+                    you — those lenders will see your history.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setConfirmSwitch(null)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={() => connect(confirmSwitch)} disabled={busyOrgId === confirmSwitch.id}>
+                    Confirm switch
+                  </Button>
+                </CardContent>
+              </Card>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

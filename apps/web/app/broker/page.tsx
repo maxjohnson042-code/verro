@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { toast } from "sonner";
+import { CheckCircle2, Circle } from "lucide-react";
 import { apiFetch, apiOpenFile } from "@/lib/api-client";
 import { getAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -8,8 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BrokerAvatar } from "@/components/broker-avatar";
+import { VerificationPipeline } from "@/components/verification-pipeline";
+import { OutstandingActions, type OutstandingAction } from "@/components/outstanding-actions";
+import { SumsubVerification } from "@/components/sumsub-verification";
 
 // Broker portal home. Section 2 (reworked) split verification into "one
 // global pipeline" + "per-org relationships"; this page is the single hub
@@ -36,6 +43,20 @@ interface RelationshipSummary {
   organization: Organization;
   trainingRecords?: TrainingRecord[];
 }
+interface StatusEvent {
+  id: string;
+  toStatus: string;
+  reason: string | null;
+  createdAt: string;
+}
+interface AccessGrant {
+  id: string;
+  organization: Organization;
+  origin: string;
+  status: string;
+  requestedAt: string;
+  decidedAt: string | null;
+}
 interface BrokerProfile {
   id: string;
   firstName: string;
@@ -51,6 +72,8 @@ interface BrokerProfile {
   piInsuranceExpiryAt: string | null;
   businessMemberships: { brokerBusiness: { id: string; legalName: string } }[];
   relationships: RelationshipSummary[];
+  statusEvents: StatusEvent[];
+  accessGrants: AccessGrant[];
 }
 interface ConnectOptions {
   activeAssociation: Organization | null;
@@ -113,7 +136,11 @@ function TaskRow({
     <div className="rounded-md border border-border p-3">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <span className={done ? "text-success" : "text-muted-foreground"}>{done ? "✓" : "○"}</span>
+          {done ? (
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+          ) : (
+            <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
           <span className="text-sm font-medium">{title}</span>
           {done && doneLabel && <span className="text-xs text-muted-foreground">— {doneLabel}</span>}
         </div>
@@ -121,7 +148,19 @@ function TaskRow({
           {isOpen ? "Close" : done ? "Edit" : "Complete"}
         </Button>
       </div>
-      {isOpen && <div className="mt-3 border-t border-border pt-3">{children}</div>}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <div className="mt-3 border-t border-border pt-3">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -132,13 +171,13 @@ export default function BrokerDashboardPage() {
   const [options, setOptions] = useState<ConnectOptions | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [openTask, setOpenTask] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [uploadDocType, setUploadDocType] = useState(BROKER_DOC_TYPES[0].value);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoVersion, setPhotoVersion] = useState(0);
+  const [decidingGrantId, setDecidingGrantId] = useState<string | null>(null);
 
   // Form state for each inline task.
   const [legalName, setLegalName] = useState("");
@@ -159,6 +198,12 @@ export default function BrokerDashboardPage() {
   const [associationMembershipNumber, setAssociationMembershipNumber] = useState("");
 
   const [agreed, setAgreed] = useState(false);
+
+  const businessRef = useRef<HTMLDivElement>(null);
+  const qualificationsRef = useRef<HTMLDivElement>(null);
+  const insuranceRef = useRef<HTMLDivElement>(null);
+  const associationRef = useRef<HTMLDivElement>(null);
+  const documentsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const auth = getAuth();
@@ -189,7 +234,7 @@ export default function BrokerDashboardPage() {
       const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${data.id}`);
       setDocuments(docs);
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     }
   }
 
@@ -197,21 +242,29 @@ export default function BrokerDashboardPage() {
     setOpenTask((prev) => (prev === id ? null : id));
   }
 
+  function jumpToTask(id: string, ref: React.RefObject<HTMLDivElement>) {
+    setOpenTask(id);
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function jumpToSection(ref: React.RefObject<HTMLDivElement>) {
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   async function handleUpload() {
     if (!profile || !uploadFile) return;
     setUploading(true);
-    setStatus(null);
     try {
       const formData = new FormData();
       formData.append("file", uploadFile);
       formData.append("docType", uploadDocType);
       await apiFetch("/documents", { method: "POST", body: formData });
       setUploadFile(null);
-      setStatus("Document uploaded.");
+      toast.success("Document uploaded.");
       const docs = await apiFetch<DocumentRow[]>(`/documents/broker/${profile.id}`);
       setDocuments(docs);
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     } finally {
       setUploading(false);
     }
@@ -220,7 +273,6 @@ export default function BrokerDashboardPage() {
   async function handlePhotoUpload() {
     if (!profile || !photoFile) return;
     setUploadingPhoto(true);
-    setStatus(null);
     try {
       const formData = new FormData();
       formData.append("file", photoFile);
@@ -228,9 +280,9 @@ export default function BrokerDashboardPage() {
       await apiFetch("/documents", { method: "POST", body: formData });
       setPhotoFile(null);
       setPhotoVersion((v) => v + 1);
-      setStatus("Profile photo updated.");
+      toast.success("Profile photo updated.");
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     } finally {
       setUploadingPhoto(false);
     }
@@ -240,19 +292,35 @@ export default function BrokerDashboardPage() {
     try {
       await apiOpenFile(`/documents/${doc.id}/file`, doc.originalFilename ?? "document");
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
     }
   }
 
   async function runTask(action: () => Promise<unknown>, successMessage: string) {
-    setStatus(null);
     try {
       await action();
-      setStatus(successMessage);
+      toast.success(successMessage);
       setOpenTask(null);
       await load();
     } catch (err) {
-      setStatus(`Error: ${(err as Error).message}`);
+      toast.error((err as Error).message);
+    }
+  }
+
+  async function handleDecideGrant(grantId: string, decision: "GRANTED" | "DENIED") {
+    if (!profile) return;
+    setDecidingGrantId(grantId);
+    try {
+      await apiFetch(`/access-grants/${grantId}/decide`, {
+        method: "PATCH",
+        body: JSON.stringify({ decision, brokerId: profile.id }),
+      });
+      toast.success(decision === "GRANTED" ? "Access granted." : "Access request denied.");
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setDecidingGrantId(null);
     }
   }
 
@@ -284,7 +352,12 @@ export default function BrokerDashboardPage() {
   const hasInsurance = !!profile.piInsurancePolicyNumber;
   const hasAssociationDeclared = !!profile.associationMembershipNumber;
   const isVerified = profile.overallStatus === "ACTIVE";
-  const inReview = ["SUBMITTED", "IDV_PENDING", "SCREENING_PENDING", "DOC_REVIEW_PENDING", "PENDING_ADMIN_APPROVAL"].includes(
+  // SUBMITTED/IDV_PENDING: the broker still has something to do (launch or
+  // finish the Sumsub widget). Everything after that is genuinely just
+  // waiting on us - see handleIdvWebhook, which is what moves a broker out
+  // of IDV_PENDING in the first place.
+  const needsIdv = ["SUBMITTED", "IDV_PENDING"].includes(profile.overallStatus);
+  const inReviewWaiting = ["SCREENING_PENDING", "DOC_REVIEW_PENDING", "PENDING_ADMIN_APPROVAL"].includes(
     profile.overallStatus,
   );
 
@@ -304,13 +377,73 @@ export default function BrokerDashboardPage() {
     ["PENDING_ACCEPTANCE", "CREDIT_REP_PENDING", "ACCREDITATION_PENDING"].includes(r.status),
   );
 
-  const allCaughtUp =
-    profile.overallStatus !== "DRAFT" &&
-    hasBusiness &&
-    hasQualifications &&
-    hasInsurance &&
-    hasAssociationDeclared &&
-    waiting.length === 0;
+  const completedProfileTaskCount = [hasBusiness, hasQualifications, hasInsurance, hasAssociationDeclared].filter(
+    Boolean,
+  ).length;
+
+  const pendingAccessGrants = profile.accessGrants.filter((g) => g.status === "PENDING");
+  const rejectedDocuments = documents.filter((d) => d.reviewStatus === "REJECTED");
+
+  // Everything the broker themselves can act on right now, consolidated
+  // in priority order: decisions needing a response, evidence that was
+  // rejected, then the standing profile-completion tasks. Deliberately
+  // excludes `waiting` above - that's the org's turn, not the broker's.
+  const outstandingActions: OutstandingAction[] = [
+    ...pendingAccessGrants.map((g) => ({
+      id: `grant-${g.id}`,
+      label: `${g.organization.legalName} requests access to your profile`,
+      description: "They won't see any of your details until you decide.",
+      buttons: [
+        {
+          label: "Grant",
+          onClick: () => handleDecideGrant(g.id, "GRANTED"),
+          disabled: decidingGrantId === g.id,
+        },
+        {
+          label: "Deny",
+          variant: "destructive" as const,
+          onClick: () => handleDecideGrant(g.id, "DENIED"),
+          disabled: decidingGrantId === g.id,
+        },
+      ],
+    })),
+    ...rejectedDocuments.map((d) => ({
+      id: `doc-${d.id}`,
+      label: `Re-upload: ${DOC_TYPE_LABEL[d.docType] ?? d.docType}`,
+      description: d.reviewNotes ?? "Rejected - see supporting documents below.",
+      onClick: () => jumpToSection(documentsRef),
+    })),
+    ...(!hasBusiness
+      ? [{ id: "business", label: "Add business details", onClick: () => jumpToTask("business", businessRef) }]
+      : []),
+    ...(!hasQualifications
+      ? [
+          {
+            id: "qualifications",
+            label: "Add qualifications & CPD",
+            onClick: () => jumpToTask("qualifications", qualificationsRef),
+          },
+        ]
+      : []),
+    ...(!hasInsurance
+      ? [
+          {
+            id: "insurance",
+            label: "Add professional indemnity insurance",
+            onClick: () => jumpToTask("insurance", insuranceRef),
+          },
+        ]
+      : []),
+    ...(!hasAssociationDeclared
+      ? [
+          {
+            id: "association",
+            label: "Add association membership",
+            onClick: () => jumpToTask("association", associationRef),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -341,16 +474,31 @@ export default function BrokerDashboardPage() {
         Complete these whenever you have the information — nothing here has to be done all at once.
       </p>
 
-      {allCaughtUp && (
-        <p className="mt-4 rounded-md border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
-          You&apos;re all caught up. Nothing outstanding right now.
-        </p>
-      )}
+      {/* Verification progress overview */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Verification progress</CardTitle>
+          <CardDescription>Where your verification is up to, and how complete your profile is.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-5">
+          <VerificationPipeline overallStatus={profile.overallStatus} statusEvents={profile.statusEvents} />
+          <div>
+            <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+              <span>Profile completeness</span>
+              <span>{completedProfileTaskCount}/4</span>
+            </div>
+            <Progress value={(completedProfileTaskCount / 4) * 100} />
+          </div>
+        </CardContent>
+      </Card>
 
-      {status && <p className="mt-4 text-sm text-muted-foreground">{status}</p>}
+      {/* Outstanding actions - the single "what do I do now" surface */}
+      <div className="mt-4">
+        <OutstandingActions items={outstandingActions} />
+      </div>
 
       {/* Group 1: Get verified */}
-      <Card className="mt-6">
+      <Card className="mt-4">
         <CardHeader>
           <CardTitle>Get verified</CardTitle>
           <CardDescription>Done once — trusted by every organization you connect with afterward.</CardDescription>
@@ -383,7 +531,17 @@ export default function BrokerDashboardPage() {
               </div>
             </TaskRow>
           )}
-          {inReview && (
+          {needsIdv && (
+            <div className="grid gap-2">
+              <p className="text-sm text-muted-foreground">
+                {profile.overallStatus === "IDV_PENDING"
+                  ? "Finish identity verification below — a quick photo ID and selfie check."
+                  : "Last step: verify your identity below with a quick photo ID and selfie check."}
+              </p>
+              <SumsubVerification />
+            </div>
+          )}
+          {inReviewWaiting && (
             <p className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
               Your verification is with our review team (status: {profile.overallStatus.replace(/_/g, " ")}). You&apos;ll
               get an email as it progresses.
@@ -411,244 +569,252 @@ export default function BrokerDashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-2">
-          <TaskRow
-            title="Business details"
-            done={hasBusiness}
-            doneLabel={hasBusiness ? profile.businessMemberships[0].brokerBusiness.legalName : undefined}
-            isOpen={openTask === "business"}
-            onToggle={() => toggleTask("business")}
-          >
-            {hasBusiness ? (
-              <p className="text-sm text-muted-foreground">
-                Already added. Editing existing business details isn&apos;t available yet — contact support if
-                something needs to change.
-              </p>
-            ) : (
-              <div className="grid gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="legalName">Legal / business name</Label>
-                  <Input id="legalName" value={legalName} onChange={(e) => setLegalName(e.target.value)} />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="entityType">Entity type</Label>
-                  <Select id="entityType" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
-                    <option value="SOLE_TRADER">Sole trader</option>
-                    <option value="COMPANY">Company</option>
-                    <option value="PARTNERSHIP">Partnership</option>
-                    <option value="TRUST">Trust</option>
-                  </Select>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="abnAcn">ABN / ACN</Label>
-                  <Input id="abnAcn" value={abnAcn} onChange={(e) => setAbnAcn(e.target.value)} />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="aclHolderType">Credit licence status</Label>
-                  <Select id="aclHolderType" value={aclHolderType} onChange={(e) => setAclHolderType(e.target.value)}>
-                    <option value="CREDIT_REPRESENTATIVE">Credit Representative (under another ACL)</option>
-                    <option value="OWN_ACL">Holds own ACL</option>
-                  </Select>
-                </div>
-                {aclHolderType === "OWN_ACL" ? (
+          <div ref={businessRef}>
+            <TaskRow
+              title="Business details"
+              done={hasBusiness}
+              doneLabel={hasBusiness ? profile.businessMemberships[0].brokerBusiness.legalName : undefined}
+              isOpen={openTask === "business"}
+              onToggle={() => toggleTask("business")}
+            >
+              {hasBusiness ? (
+                <p className="text-sm text-muted-foreground">
+                  Already added. Editing existing business details isn&apos;t available yet — contact support if
+                  something needs to change.
+                </p>
+              ) : (
+                <div className="grid gap-3">
                   <div className="grid gap-1.5">
-                    <Label htmlFor="aclNumber">ACL number</Label>
-                    <Input id="aclNumber" value={aclNumber} onChange={(e) => setAclNumber(e.target.value)} />
+                    <Label htmlFor="legalName">Legal / business name</Label>
+                    <Input id="legalName" value={legalName} onChange={(e) => setLegalName(e.target.value)} />
                   </div>
-                ) : (
                   <div className="grid gap-1.5">
-                    <Label htmlFor="crn">Credit Representative Number</Label>
+                    <Label htmlFor="entityType">Entity type</Label>
+                    <Select id="entityType" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
+                      <option value="SOLE_TRADER">Sole trader</option>
+                      <option value="COMPANY">Company</option>
+                      <option value="PARTNERSHIP">Partnership</option>
+                      <option value="TRUST">Trust</option>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="abnAcn">ABN / ACN</Label>
+                    <Input id="abnAcn" value={abnAcn} onChange={(e) => setAbnAcn(e.target.value)} />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="aclHolderType">Credit licence status</Label>
+                    <Select id="aclHolderType" value={aclHolderType} onChange={(e) => setAclHolderType(e.target.value)}>
+                      <option value="CREDIT_REPRESENTATIVE">Credit Representative (under another ACL)</option>
+                      <option value="OWN_ACL">Holds own ACL</option>
+                    </Select>
+                  </div>
+                  {aclHolderType === "OWN_ACL" ? (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="aclNumber">ACL number</Label>
+                      <Input id="aclNumber" value={aclNumber} onChange={(e) => setAclNumber(e.target.value)} />
+                    </div>
+                  ) : (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="crn">Credit Representative Number</Label>
+                      <Input
+                        id="crn"
+                        value={creditRepresentativeNumber}
+                        onChange={(e) => setCreditRepresentativeNumber(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    disabled={!legalName.trim()}
+                    onClick={() =>
+                      runTask(async () => {
+                        const business = await apiFetch<{ id: string }>("/broker-businesses", {
+                          method: "POST",
+                          body: JSON.stringify({
+                            legalName,
+                            entityType,
+                            abnAcn,
+                            aclHolderType,
+                            aclNumber: aclHolderType === "OWN_ACL" ? aclNumber : undefined,
+                            creditRepresentativeNumber:
+                              aclHolderType === "CREDIT_REPRESENTATIVE" ? creditRepresentativeNumber : undefined,
+                          }),
+                        });
+                        await apiFetch(`/broker-businesses/${business.id}/members`, {
+                          method: "POST",
+                          body: JSON.stringify({ brokerId: profile.id, role: "PRINCIPAL", isPrimary: true }),
+                        });
+                      }, "Business details saved.")
+                    }
+                  >
+                    Save
+                  </Button>
+                </div>
+              )}
+            </TaskRow>
+          </div>
+
+          <div ref={qualificationsRef}>
+            <TaskRow
+              title="Qualifications & CPD"
+              done={hasQualifications}
+              isOpen={openTask === "qualifications"}
+              onToggle={() => toggleTask("qualifications")}
+            >
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="certIv">Certificate IV completed</Label>
                     <Input
-                      id="crn"
-                      value={creditRepresentativeNumber}
-                      onChange={(e) => setCreditRepresentativeNumber(e.target.value)}
+                      id="certIv"
+                      type="date"
+                      value={certIvCompletedAt}
+                      onChange={(e) => setCertIvCompletedAt(e.target.value)}
                     />
                   </div>
-                )}
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="diploma">Diploma completed</Label>
+                    <Input
+                      id="diploma"
+                      type="date"
+                      value={diplomaCompletedAt}
+                      onChange={(e) => setDiplomaCompletedAt(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="cpdHours">CPD hours this year</Label>
+                  <Input
+                    id="cpdHours"
+                    type="number"
+                    min={0}
+                    value={cpdHoursCurrentYear}
+                    onChange={(e) => setCpdHoursCurrentYear(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">ASIC&apos;s minimum competence expectation is 20 hours/year.</p>
+                </div>
                 <Button
                   type="button"
-                  disabled={!legalName.trim()}
                   onClick={() =>
-                    runTask(async () => {
-                      const business = await apiFetch<{ id: string }>("/broker-businesses", {
-                        method: "POST",
-                        body: JSON.stringify({
-                          legalName,
-                          entityType,
-                          abnAcn,
-                          aclHolderType,
-                          aclNumber: aclHolderType === "OWN_ACL" ? aclNumber : undefined,
-                          creditRepresentativeNumber:
-                            aclHolderType === "CREDIT_REPRESENTATIVE" ? creditRepresentativeNumber : undefined,
+                    runTask(
+                      () =>
+                        apiFetch(`/brokers/${profile.id}/qualifications`, {
+                          method: "PATCH",
+                          body: JSON.stringify({
+                            certIvCompletedAt: certIvCompletedAt || undefined,
+                            diplomaCompletedAt: diplomaCompletedAt || undefined,
+                            cpdHoursCurrentYear: cpdHoursCurrentYear ? Number(cpdHoursCurrentYear) : undefined,
+                          }),
                         }),
-                      });
-                      await apiFetch(`/broker-businesses/${business.id}/members`, {
-                        method: "POST",
-                        body: JSON.stringify({ brokerId: profile.id, role: "PRINCIPAL", isPrimary: true }),
-                      });
-                    }, "Business details saved.")
+                      "Qualifications saved.",
+                    )
                   }
                 >
                   Save
                 </Button>
               </div>
-            )}
-          </TaskRow>
+            </TaskRow>
+          </div>
 
-          <TaskRow
-            title="Qualifications & CPD"
-            done={hasQualifications}
-            isOpen={openTask === "qualifications"}
-            onToggle={() => toggleTask("qualifications")}
-          >
-            <div className="grid gap-3">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="certIv">Certificate IV completed</Label>
-                  <Input
-                    id="certIv"
-                    type="date"
-                    value={certIvCompletedAt}
-                    onChange={(e) => setCertIvCompletedAt(e.target.value)}
-                  />
+          <div ref={insuranceRef}>
+            <TaskRow
+              title="Professional indemnity insurance"
+              done={hasInsurance}
+              isOpen={openTask === "insurance"}
+              onToggle={() => toggleTask("insurance")}
+            >
+              <div className="grid gap-3">
+                <p className="text-xs text-muted-foreground">
+                  If your aggregator provides cover under their policy, you can leave this until you know.
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="piPolicy">Policy number</Label>
+                    <Input
+                      id="piPolicy"
+                      value={piInsurancePolicyNumber}
+                      onChange={(e) => setPiInsurancePolicyNumber(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="piExpiry">Expiry date</Label>
+                    <Input
+                      id="piExpiry"
+                      type="date"
+                      value={piInsuranceExpiryAt}
+                      onChange={(e) => setPiInsuranceExpiryAt(e.target.value)}
+                    />
+                  </div>
                 </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="diploma">Diploma completed</Label>
-                  <Input
-                    id="diploma"
-                    type="date"
-                    value={diplomaCompletedAt}
-                    onChange={(e) => setDiplomaCompletedAt(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="cpdHours">CPD hours this year</Label>
-                <Input
-                  id="cpdHours"
-                  type="number"
-                  min={0}
-                  value={cpdHoursCurrentYear}
-                  onChange={(e) => setCpdHoursCurrentYear(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">ASIC&apos;s minimum competence expectation is 20 hours/year.</p>
-              </div>
-              <Button
-                type="button"
-                onClick={() =>
-                  runTask(
-                    () =>
-                      apiFetch(`/brokers/${profile.id}/qualifications`, {
-                        method: "PATCH",
-                        body: JSON.stringify({
-                          certIvCompletedAt: certIvCompletedAt || undefined,
-                          diplomaCompletedAt: diplomaCompletedAt || undefined,
-                          cpdHoursCurrentYear: cpdHoursCurrentYear ? Number(cpdHoursCurrentYear) : undefined,
+                <Button
+                  type="button"
+                  onClick={() =>
+                    runTask(
+                      () =>
+                        apiFetch(`/brokers/${profile.id}/qualifications`, {
+                          method: "PATCH",
+                          body: JSON.stringify({
+                            piInsurancePolicyNumber: piInsurancePolicyNumber || undefined,
+                            piInsuranceExpiryAt: piInsuranceExpiryAt || undefined,
+                          }),
                         }),
-                      }),
-                    "Qualifications saved.",
-                  )
-                }
-              >
-                Save
-              </Button>
-            </div>
-          </TaskRow>
-
-          <TaskRow
-            title="Professional indemnity insurance"
-            done={hasInsurance}
-            isOpen={openTask === "insurance"}
-            onToggle={() => toggleTask("insurance")}
-          >
-            <div className="grid gap-3">
-              <p className="text-xs text-muted-foreground">
-                If your aggregator provides cover under their policy, you can leave this until you know.
-              </p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="piPolicy">Policy number</Label>
-                  <Input
-                    id="piPolicy"
-                    value={piInsurancePolicyNumber}
-                    onChange={(e) => setPiInsurancePolicyNumber(e.target.value)}
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="piExpiry">Expiry date</Label>
-                  <Input
-                    id="piExpiry"
-                    type="date"
-                    value={piInsuranceExpiryAt}
-                    onChange={(e) => setPiInsuranceExpiryAt(e.target.value)}
-                  />
-                </div>
+                      "Insurance details saved.",
+                    )
+                  }
+                >
+                  Save
+                </Button>
               </div>
-              <Button
-                type="button"
-                onClick={() =>
-                  runTask(
-                    () =>
-                      apiFetch(`/brokers/${profile.id}/qualifications`, {
-                        method: "PATCH",
-                        body: JSON.stringify({
-                          piInsurancePolicyNumber: piInsurancePolicyNumber || undefined,
-                          piInsuranceExpiryAt: piInsuranceExpiryAt || undefined,
+            </TaskRow>
+          </div>
+
+          <div ref={associationRef}>
+            <TaskRow
+              title="Association membership"
+              done={hasAssociationDeclared}
+              doneLabel={hasAssociationDeclared ? `${profile.associationName} #${profile.associationMembershipNumber}` : undefined}
+              isOpen={openTask === "association"}
+              onToggle={() => toggleTask("association")}
+            >
+              <div className="grid gap-3">
+                <p className="text-xs text-muted-foreground">
+                  Self-declared for now — MFAA/FBAA don&apos;t offer a verification API yet. This is separate from
+                  actually connecting to your association (see below), which is a real accept step.
+                </p>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="associationName">Association</Label>
+                  <Select id="associationName" value={associationName} onChange={(e) => setAssociationName(e.target.value)}>
+                    <option value="MFAA">MFAA</option>
+                    <option value="FBAA">FBAA</option>
+                  </Select>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="membershipNumber">Membership number</Label>
+                  <Input
+                    id="membershipNumber"
+                    value={associationMembershipNumber}
+                    onChange={(e) => setAssociationMembershipNumber(e.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  disabled={!associationMembershipNumber.trim()}
+                  onClick={() =>
+                    runTask(
+                      () =>
+                        apiFetch(`/brokers/${profile.id}/association`, {
+                          method: "PATCH",
+                          body: JSON.stringify({ associationName, associationMembershipNumber }),
                         }),
-                      }),
-                    "Insurance details saved.",
-                  )
-                }
-              >
-                Save
-              </Button>
-            </div>
-          </TaskRow>
-
-          <TaskRow
-            title="Association membership"
-            done={hasAssociationDeclared}
-            doneLabel={hasAssociationDeclared ? `${profile.associationName} #${profile.associationMembershipNumber}` : undefined}
-            isOpen={openTask === "association"}
-            onToggle={() => toggleTask("association")}
-          >
-            <div className="grid gap-3">
-              <p className="text-xs text-muted-foreground">
-                Self-declared for now — MFAA/FBAA don&apos;t offer a verification API yet. This is separate from
-                actually connecting to your association (see below), which is a real accept step.
-              </p>
-              <div className="grid gap-1.5">
-                <Label htmlFor="associationName">Association</Label>
-                <Select id="associationName" value={associationName} onChange={(e) => setAssociationName(e.target.value)}>
-                  <option value="MFAA">MFAA</option>
-                  <option value="FBAA">FBAA</option>
-                </Select>
+                      "Association membership saved.",
+                    )
+                  }
+                >
+                  Save
+                </Button>
               </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="membershipNumber">Membership number</Label>
-                <Input
-                  id="membershipNumber"
-                  value={associationMembershipNumber}
-                  onChange={(e) => setAssociationMembershipNumber(e.target.value)}
-                />
-              </div>
-              <Button
-                type="button"
-                disabled={!associationMembershipNumber.trim()}
-                onClick={() =>
-                  runTask(
-                    () =>
-                      apiFetch(`/brokers/${profile.id}/association`, {
-                        method: "PATCH",
-                        body: JSON.stringify({ associationName, associationMembershipNumber }),
-                      }),
-                    "Association membership saved.",
-                  )
-                }
-              >
-                Save
-              </Button>
-            </div>
-          </TaskRow>
+            </TaskRow>
+          </div>
         </CardContent>
       </Card>
 
@@ -656,62 +822,64 @@ export default function BrokerDashboardPage() {
           (ID, police check, Cert IV/Diploma, PI insurance, association
           membership). Upload is always available and never blocks the
           verification pipeline; Admin reviews and marks approved/rejected. */}
-      <Card className="mt-4">
-        <CardHeader>
-          <CardTitle>Supporting documents</CardTitle>
-          <CardDescription>
-            Upload evidence for anything above whenever you have it on hand — certificates, insurance schedule,
-            ID, police check.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3">
-          {documents.length === 0 && <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>}
-          {documents.length > 0 && (
-            <ul className="grid gap-2">
-              {documents.map((d) => (
-                <li
-                  key={d.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm"
-                >
-                  <div className="grid">
-                    <button type="button" onClick={() => handleViewDocument(d)} className="text-left text-primary hover:underline">
-                      {DOC_TYPE_LABEL[d.docType] ?? d.docType}
-                    </button>
-                    <span className="text-xs text-muted-foreground">
-                      {d.originalFilename} · {new Date(d.uploadedAt).toLocaleDateString()}
-                      {d.reviewNotes ? ` — ${d.reviewNotes}` : ""}
-                    </span>
-                  </div>
-                  <Badge variant={docReviewVariant(d.reviewStatus)}>{d.reviewStatus}</Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
-            <div className="grid gap-1.5">
-              <Label htmlFor="docType">Document type</Label>
-              <Select id="docType" value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value)}>
-                {BROKER_DOC_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
+      <div ref={documentsRef}>
+        <Card className="mt-4">
+          <CardHeader>
+            <CardTitle>Supporting documents</CardTitle>
+            <CardDescription>
+              Upload evidence for anything above whenever you have it on hand — certificates, insurance schedule,
+              ID, police check.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3">
+            {documents.length === 0 && <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>}
+            {documents.length > 0 && (
+              <ul className="grid gap-2">
+                {documents.map((d) => (
+                  <li
+                    key={d.id}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm"
+                  >
+                    <div className="grid">
+                      <button type="button" onClick={() => handleViewDocument(d)} className="text-left text-primary hover:underline">
+                        {DOC_TYPE_LABEL[d.docType] ?? d.docType}
+                      </button>
+                      <span className="text-xs text-muted-foreground">
+                        {d.originalFilename} · {new Date(d.uploadedAt).toLocaleDateString()}
+                        {d.reviewNotes ? ` — ${d.reviewNotes}` : ""}
+                      </span>
+                    </div>
+                    <Badge variant={docReviewVariant(d.reviewStatus)}>{d.reviewStatus}</Badge>
+                  </li>
                 ))}
-              </Select>
+              </ul>
+            )}
+            <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+              <div className="grid gap-1.5">
+                <Label htmlFor="docType">Document type</Label>
+                <Select id="docType" value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value)}>
+                  {BROKER_DOC_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="docFile">File</Label>
+                <Input
+                  id="docFile"
+                  type="file"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                />
+              </div>
+              <Button type="button" disabled={!uploadFile || uploading} onClick={handleUpload}>
+                {uploading ? "Uploading..." : "Upload"}
+              </Button>
             </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="docFile">File</Label>
-              <Input
-                id="docFile"
-                type="file"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-              />
-            </div>
-            <Button type="button" disabled={!uploadFile || uploading} onClick={handleUpload}>
-              {uploading ? "Uploading..." : "Upload"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Group 3: Connect with organizations */}
       <Card className="mt-4">
@@ -730,8 +898,13 @@ export default function BrokerDashboardPage() {
           {isVerified && (
             <>
               <div className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm">
-                <span>
-                  {activeAssociationRel ? "✓ " : "○ "}Association
+                <span className="flex items-center gap-2">
+                  {activeAssociationRel ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                  ) : (
+                    <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  Association
                   {activeAssociationRel ? ` — ${activeAssociationRel.organization.legalName}` : ""}
                 </span>
                 {!activeAssociationRel && (
@@ -741,8 +914,13 @@ export default function BrokerDashboardPage() {
                 )}
               </div>
               <div className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm">
-                <span>
-                  {activeAggregatorRel ? "✓ " : "○ "}Aggregator
+                <span className="flex items-center gap-2">
+                  {activeAggregatorRel ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                  ) : (
+                    <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  Aggregator
                   {activeAggregatorRel ? ` — ${activeAggregatorRel.organization.legalName}` : ""}
                 </span>
                 {!activeAggregatorRel && (
